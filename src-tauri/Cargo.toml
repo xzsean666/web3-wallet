@@ -15,7 +15,27 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+alloy-consensus = "=1.6.3"
+alloy-primitives = "=1.5.7"
+alloy-signer = "=1.6.3"
+alloy-signer-local = "=1.6.3"
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tauri-plugin-stronghold = "2"
+argon2 = { package = "rust-argon2", version = "3.0.0" }
+bip39 = { version = "2.2.2", features = ["rand", "zeroize"] }
+chrono = "0.4.44"
+hex = "0.4.3"
+hmac = "0.12.1"
+iota_stronghold = "2"
+k256 = { version = "0.13.4", features = ["ecdsa"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+sha2 = "0.10.9"
+sha3 = "0.10.8"
+thiserror = "2.0.18"
+zeroize = "1.8.2"
+
+[profile.dev.package.scrypt]
+opt-level = 3

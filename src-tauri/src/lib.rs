@@ -1,4 +1,7 @@
+mod wallet;
+
 use serde::Serialize;
+use tauri::Manager;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,8 +27,32 @@ fn get_app_overview() -> AppOverview {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            let local_data_dir = app.path().app_local_data_dir()?;
+            std::fs::create_dir_all(&local_data_dir)?;
+            let salt_path = local_data_dir.join("salt.txt");
+
+            app.manage(wallet::WalletRuntimeState::default());
+
+            app.handle()
+                .plugin(tauri_plugin_stronghold::Builder::with_argon2(&salt_path).build())?;
+
+            Ok(())
+        })
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![get_app_overview])
+        .invoke_handler(tauri::generate_handler![
+            get_app_overview,
+            wallet::cancel_pending_wallet,
+            wallet::create_wallet,
+            wallet::finalize_pending_wallet,
+            wallet::get_pending_backup_phrase,
+            wallet::import_wallet,
+            wallet::load_pending_wallet_draft,
+            wallet::load_wallet_profile,
+            wallet::sign_transfer_transaction,
+            wallet::unlock_wallet,
+            wallet::update_biometric_setting,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
