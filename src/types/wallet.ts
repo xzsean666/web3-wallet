@@ -5,6 +5,8 @@ export type WalletSource = "created" | "imported";
 export type FeeMode = "legacy" | "eip1559";
 
 export interface PendingWalletDraft {
+  accountId: string;
+  derivationIndex: number;
   walletLabel: string;
   address: WalletAddress;
   isBiometricEnabled: boolean;
@@ -14,6 +16,8 @@ export interface PendingWalletDraft {
 }
 
 export interface WalletProfile {
+  accountId: string;
+  derivationIndex: number;
   walletLabel: string;
   address: WalletAddress;
   source: WalletSource;
@@ -22,6 +26,11 @@ export interface WalletProfile {
   hasBackedUpMnemonic: boolean;
   createdAt: string;
   lastUnlockedAt: string | null;
+}
+
+export interface WalletSessionSnapshot {
+  accounts: WalletProfile[];
+  activeAccountId: string | null;
 }
 
 export interface TrackedToken {
@@ -43,13 +52,39 @@ export interface TokenDraft {
   contractAddress: string;
 }
 
+export interface AddressBookDraft {
+  networkId: string;
+  label: string;
+  address: string;
+  note: string;
+}
+
+export interface AddressBookEntry {
+  id: string;
+  networkId: string;
+  label: string;
+  address: WalletAddress;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string | null;
+}
+
 export interface ActivityItem {
   id: string;
   title: string;
   subtitle: string;
-  status: "pending" | "complete" | "empty";
+  status: "pending" | "complete" | "reverted" | "empty";
+  accountId?: string;
+  accountAddress?: WalletAddress;
   txHash?: WalletHex;
   networkId?: string;
+  assetId?: string;
+  assetType?: "native" | "erc20";
+  assetSymbol?: string;
+  amount?: string;
+  recipientAddress?: WalletAddress;
+  createdAt?: string;
 }
 
 export type TransferAsset =
@@ -62,6 +97,7 @@ export type TransferAsset =
     };
 
 export interface SignTransferRequest {
+  accountId: string;
   password: string;
   chainId: string;
   nonce: string;

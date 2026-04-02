@@ -20,7 +20,8 @@ fn get_app_overview() -> AppOverview {
         app_version: env!("CARGO_PKG_VERSION"),
         runtime: "Tauri 2 + Vue 3 + TypeScript",
         security_policy: "Sensitive keys stay in Rust/Tauri Core only",
-        storage_strategy: "Stronghold for secrets, SQLite for non-sensitive cache",
+        storage_strategy:
+            "Stronghold for secrets, SQLite/WebView local storage for non-sensitive state",
     }
 }
 
@@ -44,11 +45,14 @@ pub fn run() {
             get_app_overview,
             wallet::cancel_pending_wallet,
             wallet::create_wallet,
+            wallet::derive_mnemonic_account,
             wallet::finalize_pending_wallet,
             wallet::get_pending_backup_phrase,
             wallet::import_wallet,
             wallet::load_pending_wallet_draft,
             wallet::load_wallet_profile,
+            wallet::load_wallet_session,
+            wallet::set_active_wallet,
             wallet::sign_transfer_transaction,
             wallet::unlock_wallet,
             wallet::update_biometric_setting,

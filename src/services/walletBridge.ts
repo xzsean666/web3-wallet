@@ -7,6 +7,7 @@ import type {
   SignedTransferPayload,
   SignTransferRequest,
   WalletProfile,
+  WalletSessionSnapshot,
 } from "../types/wallet";
 
 interface CreateWalletRequest {
@@ -21,7 +22,23 @@ interface ImportWalletRequest extends CreateWalletRequest {
 }
 
 interface UpdateBiometricRequest {
+  accountId: string;
   isBiometricEnabled: boolean;
+}
+
+interface UnlockWalletRequest {
+  accountId: string;
+  password: string;
+}
+
+interface SetActiveWalletRequest {
+  accountId: string;
+}
+
+interface DeriveMnemonicAccountRequest {
+  sourceAccountId: string;
+  walletLabel: string;
+  password: string;
 }
 
 interface PreviewPendingState {
@@ -32,14 +49,18 @@ interface PreviewPendingState {
 
 interface PreviewState {
   pending: PreviewPendingState | null;
-  passwordHash: string;
-  wallet: WalletProfile | null;
+  passwordHashes: Record<string, string>;
+  mnemonicSecrets: Record<string, string>;
+  accounts: WalletProfile[];
+  activeAccountId: string | null;
 }
 
 const previewState: PreviewState = {
   pending: null,
-  passwordHash: "",
-  wallet: null,
+  passwordHashes: {},
+  mnemonicSecrets: {},
+  accounts: [],
+  activeAccountId: null,
 };
 
 export function isTauriWalletRuntime() {
@@ -51,14 +72,12 @@ export async function createWallet(request: CreateWalletRequest) {
     return invoke<PendingWalletDraft>("create_wallet", { request });
   }
 
-  if (previewState.wallet) {
-    throw new Error("当前钱包已存在，MVP 只支持单钱包");
-  }
-
   const mnemonic = generateMnemonic(english);
   const account = mnemonicToAccount(mnemonic);
   const passwordHash = await hashSecret(request.password);
   const draft: PendingWalletDraft = {
+    accountId: buildAccountId(account.address),
+    derivationIndex: 0,
     walletLabel: request.walletLabel.trim(),
     address: account.address,
     isBiometricEnabled: request.isBiometricEnabled,
@@ -120,8 +139,10 @@ export async function finalizePendingWallet() {
     lastUnlockedAt: new Date().toISOString(),
   };
 
-  previewState.wallet = nextWallet;
-  previewState.passwordHash = previewState.pending.passwordHash;
+  upsertPreviewAccount(nextWallet);
+  previewState.passwordHashes[nextWallet.accountId] = previewState.pending.passwordHash;
+  previewState.mnemonicSecrets[nextWallet.accountId] = normalizeMnemonicPhrase(previewState.pending.mnemonic);
+  previewState.activeAccountId = nextWallet.accountId;
   previewState.pending = null;
 
   return nextWallet;
@@ -132,18 +153,16 @@ export async function importWallet(request: ImportWalletRequest) {
     return invoke<WalletProfile>("import_wallet", { request });
   }
 
-  if (previewState.wallet) {
-    throw new Error("当前钱包已存在，MVP 只支持单钱包");
-  }
-
   const account =
     request.secretKind === "mnemonic"
-      ? mnemonicToAccount(request.secretValue.trim())
+      ? mnemonicToAccount(normalizeMnemonicPhrase(request.secretValue))
       : privateKeyToAccount(normalizePrivateKey(request.secretValue));
 
-  previewState.pending = null;
-  previewState.passwordHash = await hashSecret(request.password);
-  previewState.wallet = {
+  ensurePreviewAddressIsUnique(account.address);
+
+  const profile: WalletProfile = {
+    accountId: buildAccountId(account.address),
+    derivationIndex: 0,
     walletLabel: request.walletLabel.trim(),
     address: account.address,
     source: "imported",
@@ -154,38 +173,132 @@ export async function importWallet(request: ImportWalletRequest) {
     lastUnlockedAt: new Date().toISOString(),
   };
 
-  return previewState.wallet;
+  previewState.pending = null;
+  previewState.passwordHashes[profile.accountId] = await hashSecret(request.password);
+  if (request.secretKind === "mnemonic") {
+    previewState.mnemonicSecrets[profile.accountId] = normalizeMnemonicPhrase(request.secretValue);
+  }
+  upsertPreviewAccount(profile);
+  previewState.activeAccountId = profile.accountId;
+
+  return profile;
 }
 
-export async function loadWalletProfile() {
+export async function deriveMnemonicAccount(request: DeriveMnemonicAccountRequest) {
   if (isTauriWalletRuntime()) {
-    return invoke<WalletProfile | null>("load_wallet_profile");
+    return invoke<WalletProfile>("derive_mnemonic_account", { request });
   }
 
-  return previewState.wallet;
-}
+  const sourceAccount = previewState.accounts.find((entry) => entry.accountId === request.sourceAccountId);
 
-export async function unlockWallet(password: string) {
-  if (isTauriWalletRuntime()) {
-    return invoke<WalletProfile | null>("unlock_wallet", { password });
+  if (!sourceAccount) {
+    throw new Error("当前找不到要派生的账号");
   }
 
-  if (!previewState.wallet || !previewState.passwordHash) {
-    return null;
+  if (sourceAccount.secretKind !== "mnemonic") {
+    throw new Error("只有助记词账号支持派生新地址");
   }
 
-  const nextHash = await hashSecret(password);
+  const storedHash = previewState.passwordHashes[sourceAccount.accountId];
+  const mnemonic = previewState.mnemonicSecrets[sourceAccount.accountId];
 
-  if (nextHash !== previewState.passwordHash) {
-    return null;
+  if (!storedHash || !mnemonic) {
+    throw new Error("当前助记词账号缺少可派生的本地恢复材料");
   }
 
-  previewState.wallet = {
-    ...previewState.wallet,
+  const nextHash = await hashSecret(request.password);
+
+  if (nextHash !== storedHash) {
+    throw new Error("钱包密码不正确，无法继续派生地址");
+  }
+
+  const nextDerivationIndex = getNextPreviewMnemonicDerivationIndex(mnemonic);
+  const nextAccount = mnemonicToAccount(mnemonic, {
+    addressIndex: nextDerivationIndex,
+  });
+
+  ensurePreviewAddressIsUnique(nextAccount.address);
+
+  const nextProfile: WalletProfile = {
+    accountId: buildAccountId(nextAccount.address),
+    derivationIndex: nextDerivationIndex,
+    walletLabel: request.walletLabel.trim(),
+    address: nextAccount.address,
+    source: sourceAccount.source,
+    secretKind: "mnemonic",
+    isBiometricEnabled: sourceAccount.isBiometricEnabled,
+    hasBackedUpMnemonic: sourceAccount.hasBackedUpMnemonic,
+    createdAt: new Date().toISOString(),
     lastUnlockedAt: new Date().toISOString(),
   };
 
-  return previewState.wallet;
+  upsertPreviewAccount(nextProfile);
+  previewState.passwordHashes[nextProfile.accountId] = storedHash;
+  previewState.mnemonicSecrets[nextProfile.accountId] = mnemonic;
+  previewState.activeAccountId = nextProfile.accountId;
+
+  return nextProfile;
+}
+
+export async function loadWalletSession() {
+  if (isTauriWalletRuntime()) {
+    return invoke<WalletSessionSnapshot>("load_wallet_session");
+  }
+
+  return createPreviewSessionSnapshot();
+}
+
+export async function loadWalletProfile() {
+  const snapshot = await loadWalletSession();
+  return (
+    snapshot.accounts.find((account) => account.accountId === snapshot.activeAccountId) ??
+    snapshot.accounts[0] ??
+    null
+  );
+}
+
+export async function unlockWallet(request: UnlockWalletRequest) {
+  if (isTauriWalletRuntime()) {
+    return invoke<WalletProfile | null>("unlock_wallet", { request });
+  }
+
+  const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
+  const storedHash = previewState.passwordHashes[request.accountId];
+
+  if (!account || !storedHash) {
+    return null;
+  }
+
+  const nextHash = await hashSecret(request.password);
+
+  if (nextHash !== storedHash) {
+    return null;
+  }
+
+  const nextProfile: WalletProfile = {
+    ...account,
+    lastUnlockedAt: new Date().toISOString(),
+  };
+
+  upsertPreviewAccount(nextProfile);
+  previewState.activeAccountId = nextProfile.accountId;
+
+  return nextProfile;
+}
+
+export async function setActiveWallet(request: SetActiveWalletRequest) {
+  if (isTauriWalletRuntime()) {
+    return invoke<WalletProfile | null>("set_active_wallet", { request });
+  }
+
+  const account = previewState.accounts.find((entry) => entry.accountId === request.accountId) ?? null;
+
+  if (!account) {
+    return null;
+  }
+
+  previewState.activeAccountId = account.accountId;
+  return account;
 }
 
 export async function updateBiometricSetting(request: UpdateBiometricRequest) {
@@ -193,16 +306,19 @@ export async function updateBiometricSetting(request: UpdateBiometricRequest) {
     return invoke<WalletProfile | null>("update_biometric_setting", { request });
   }
 
-  if (!previewState.wallet) {
+  const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
+
+  if (!account) {
     return null;
   }
 
-  previewState.wallet = {
-    ...previewState.wallet,
+  const nextProfile: WalletProfile = {
+    ...account,
     isBiometricEnabled: request.isBiometricEnabled,
   };
 
-  return previewState.wallet;
+  upsertPreviewAccount(nextProfile);
+  return nextProfile;
 }
 
 export async function signTransferTransaction(request: SignTransferRequest) {
@@ -221,4 +337,58 @@ function normalizePrivateKey(secret: string) {
   }
 
   return `0x${normalized}` as `0x${string}`;
+}
+
+function normalizeMnemonicPhrase(secret: string) {
+  return secret.trim().split(/\s+/).join(" ");
+}
+
+function buildAccountId(address: `0x${string}`) {
+  return `account-${address.toLowerCase()}`;
+}
+
+function ensurePreviewAddressIsUnique(address: `0x${string}`) {
+  if (previewState.accounts.some((entry) => entry.address.toLowerCase() === address.toLowerCase())) {
+    throw new Error("当前地址已经存在于账号列表");
+  }
+}
+
+function upsertPreviewAccount(profile: WalletProfile) {
+  const existingIndex = previewState.accounts.findIndex((entry) => entry.accountId === profile.accountId);
+
+  if (existingIndex === -1) {
+    previewState.accounts = [profile, ...previewState.accounts];
+    return;
+  }
+
+  previewState.accounts = previewState.accounts.map((entry) =>
+    entry.accountId === profile.accountId ? profile : entry,
+  );
+}
+
+function getNextPreviewMnemonicDerivationIndex(mnemonic: string) {
+  const relatedAccounts = previewState.accounts.filter(
+    (entry) =>
+      entry.secretKind === "mnemonic" &&
+      previewState.mnemonicSecrets[entry.accountId] === mnemonic,
+  );
+
+  const currentMaxIndex = relatedAccounts.reduce(
+    (maxValue, entry) => Math.max(maxValue, entry.derivationIndex ?? 0),
+    0,
+  );
+
+  return currentMaxIndex + 1;
+}
+
+function createPreviewSessionSnapshot(): WalletSessionSnapshot {
+  const activeAccountId =
+    previewState.activeAccountId ??
+    previewState.accounts[0]?.accountId ??
+    null;
+
+  return {
+    accounts: [...previewState.accounts],
+    activeAccountId,
+  };
 }

@@ -1,5 +1,6 @@
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
+import { loadPersistedUiState, patchPersistedUiState } from "../services/uiState";
 import type { NetworkConfig, NetworkDraft } from "../types/network";
 
 const presetNetworks: NetworkConfig[] = [
@@ -51,14 +52,57 @@ function normalizeNetworkDraft(draft: NetworkDraft): NetworkDraft {
   };
 }
 
+function isPersistedCustomNetwork(value: unknown): value is NetworkConfig {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+
+  const network = value as Record<string, unknown>;
+
+  return (
+    typeof network.id === "string" &&
+    typeof network.name === "string" &&
+    typeof network.chainId === "number" &&
+    Number.isInteger(network.chainId) &&
+    network.chainId > 0 &&
+    typeof network.rpcUrl === "string" &&
+    typeof network.symbol === "string" &&
+    (!("explorerUrl" in network) ||
+      typeof network.explorerUrl === "string" ||
+      typeof network.explorerUrl === "undefined")
+  );
+}
+
+function hydrateCustomNetworks(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter(isPersistedCustomNetwork)
+    .map((network) => ({
+      ...network,
+      source: "custom" as const,
+    }));
+}
+
 export const useNetworksStore = defineStore("networks", () => {
-  const customNetworks = ref<NetworkConfig[]>([]);
-  const activeNetworkId = ref("ethereum");
+  const persistedState = loadPersistedUiState();
+  const customNetworks = ref<NetworkConfig[]>(
+    hydrateCustomNetworks(persistedState.customNetworks),
+  );
+  const activeNetworkId = ref(
+    typeof persistedState.activeNetworkId === "string" ? persistedState.activeNetworkId : "ethereum",
+  );
 
   const allNetworks = computed(() => [...presetNetworks, ...customNetworks.value]);
   const activeNetwork = computed(
     () => allNetworks.value.find((network) => network.id === activeNetworkId.value) ?? presetNetworks[0],
   );
+
+  if (!allNetworks.value.some((network) => network.id === activeNetworkId.value)) {
+    activeNetworkId.value = presetNetworks[0].id;
+  }
 
   function validateDraft(draft: NetworkDraft, editingId?: string) {
     const normalizedDraft = normalizeNetworkDraft(draft);
@@ -161,6 +205,24 @@ export const useNetworksStore = defineStore("networks", () => {
       activeNetworkId.value = id;
     }
   }
+
+  watch(
+    customNetworks,
+    (nextNetworks) => {
+      patchPersistedUiState({
+        customNetworks: nextNetworks,
+      });
+    },
+    {
+      deep: true,
+    },
+  );
+
+  watch(activeNetworkId, (nextActiveNetworkId) => {
+    patchPersistedUiState({
+      activeNetworkId: nextActiveNetworkId,
+    });
+  });
 
   return {
     activeNetwork,

@@ -16,3 +16,12 @@ export interface NetworkConfig {
   explorerUrl?: string;
 }
 
+export interface RpcEndpointValidation {
+  status: "ok" | "mismatch" | "error";
+  message: string;
+  expectedChainId: number;
+  actualChainId: number | null;
+  latestBlock: string | null;
+  latencyMs: number | null;
+  checkedAt: string;
+}

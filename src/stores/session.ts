@@ -2,7 +2,8 @@ import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import {
   isTauriWalletRuntime,
-  loadWalletProfile,
+  loadWalletSession,
+  setActiveWallet as setActiveWalletBridge,
   unlockWallet as unlockWalletBridge,
   updateBiometricSetting,
 } from "../services/walletBridge";
@@ -11,24 +12,39 @@ import type {
   WalletAddress,
   WalletProfile,
   WalletSource,
+  WalletSessionSnapshot,
 } from "../types/wallet";
 
 type ShellMode = "browser-preview" | "tauri";
 
 export const useSessionStore = defineStore("session", () => {
-  const hasWallet = ref(false);
+  const walletProfiles = ref<WalletProfile[]>([]);
+  const activeAccountId = ref<string | null>(null);
   const isUnlocked = ref(false);
-  const walletLabel = ref("");
-  const primaryAddress = ref<WalletAddress | "">("");
-  const walletSource = ref<WalletSource | null>(null);
-  const walletSecretKind = ref<SecretKind | null>(null);
-  const isBiometricEnabled = ref(false);
-  const hasBackedUpMnemonic = ref(false);
-  const createdAt = ref<string | null>(null);
-  const lastUnlockedAt = ref<string | null>(null);
   const lastVisitedRoute = ref("/wallet");
   const shellMode = ref<ShellMode>("browser-preview");
 
+  const hasWallet = computed(() => walletProfiles.value.length > 0);
+  const accountCount = computed(() => walletProfiles.value.length);
+  const activeWalletProfile = computed(() => {
+    if (walletProfiles.value.length === 0) {
+      return null;
+    }
+
+    return (
+      walletProfiles.value.find((profile) => profile.accountId === activeAccountId.value) ??
+      walletProfiles.value[0] ??
+      null
+    );
+  });
+  const walletLabel = computed(() => activeWalletProfile.value?.walletLabel ?? "");
+  const primaryAddress = computed<WalletAddress | "">(() => activeWalletProfile.value?.address ?? "");
+  const walletSource = computed<WalletSource | null>(() => activeWalletProfile.value?.source ?? null);
+  const walletSecretKind = computed<SecretKind | null>(() => activeWalletProfile.value?.secretKind ?? null);
+  const isBiometricEnabled = computed(() => activeWalletProfile.value?.isBiometricEnabled ?? false);
+  const hasBackedUpMnemonic = computed(() => activeWalletProfile.value?.hasBackedUpMnemonic ?? false);
+  const createdAt = computed(() => activeWalletProfile.value?.createdAt ?? null);
+  const lastUnlockedAt = computed(() => activeWalletProfile.value?.lastUnlockedAt ?? null);
   const statusLabel = computed(() => {
     if (!hasWallet.value) {
       return "No wallet";
@@ -39,22 +55,53 @@ export const useSessionStore = defineStore("session", () => {
 
   async function bootstrap() {
     shellMode.value = isTauriWalletRuntime() ? "tauri" : "browser-preview";
-    let profile: WalletProfile | null = null;
+    let snapshot: WalletSessionSnapshot | null = null;
 
     try {
-      profile = await loadWalletProfile();
+      snapshot = await loadWalletSession();
     } catch {
       resetSession();
       return;
     }
 
-    if (!profile) {
+    if (!snapshot || snapshot.accounts.length === 0) {
       resetSession();
       shellMode.value = isTauriWalletRuntime() ? "tauri" : "browser-preview";
       return;
     }
 
-    applyWalletProfile(profile, { unlocked: false });
+    applyWalletSession(snapshot, { unlocked: false });
+  }
+
+  function applyWalletSession(
+    snapshot: WalletSessionSnapshot,
+    options: {
+      unlocked: boolean;
+    },
+  ) {
+    walletProfiles.value = [...snapshot.accounts];
+    activeAccountId.value = snapshot.activeAccountId ?? snapshot.accounts[0]?.accountId ?? null;
+    isUnlocked.value = options.unlocked;
+  }
+
+  function upsertWalletProfile(
+    profile: WalletProfile,
+    options: {
+      unlocked: boolean;
+      makeActive?: boolean;
+    },
+  ) {
+    const hasExisting = walletProfiles.value.some((entry) => entry.accountId === profile.accountId);
+
+    walletProfiles.value = hasExisting
+      ? walletProfiles.value.map((entry) => (entry.accountId === profile.accountId ? profile : entry))
+      : [profile, ...walletProfiles.value];
+
+    if (options.makeActive || !activeAccountId.value) {
+      activeAccountId.value = profile.accountId;
+    }
+
+    isUnlocked.value = options.unlocked;
   }
 
   function applyWalletProfile(
@@ -63,36 +110,30 @@ export const useSessionStore = defineStore("session", () => {
       unlocked: boolean;
     },
   ) {
-    hasWallet.value = true;
-    isUnlocked.value = options.unlocked;
-    walletLabel.value = profile.walletLabel;
-    primaryAddress.value = profile.address;
-    walletSource.value = profile.source;
-    walletSecretKind.value = profile.secretKind;
-    isBiometricEnabled.value = profile.isBiometricEnabled;
-    hasBackedUpMnemonic.value = profile.hasBackedUpMnemonic;
-    createdAt.value = profile.createdAt;
-    lastUnlockedAt.value = profile.lastUnlockedAt;
+    upsertWalletProfile(profile, {
+      unlocked: options.unlocked,
+      makeActive: true,
+    });
   }
 
   function resetSession() {
-    hasWallet.value = false;
+    walletProfiles.value = [];
+    activeAccountId.value = null;
     isUnlocked.value = false;
-    walletLabel.value = "";
-    primaryAddress.value = "";
-    walletSource.value = null;
-    walletSecretKind.value = null;
-    isBiometricEnabled.value = false;
-    hasBackedUpMnemonic.value = false;
-    createdAt.value = null;
-    lastUnlockedAt.value = null;
   }
 
   async function unlockWallet(password: string) {
+    if (!activeAccountId.value) {
+      return false;
+    }
+
     let profile: WalletProfile | null = null;
 
     try {
-      profile = await unlockWalletBridge(password);
+      profile = await unlockWalletBridge({
+        accountId: activeAccountId.value,
+        password,
+      });
     } catch {
       return false;
     }
@@ -113,11 +154,58 @@ export const useSessionStore = defineStore("session", () => {
     isUnlocked.value = false;
   }
 
+  async function selectWalletAccount(
+    accountId: string,
+    options: {
+      lock?: boolean;
+    } = {},
+  ) {
+    const matchedProfile = walletProfiles.value.find((profile) => profile.accountId === accountId);
+
+    if (!matchedProfile) {
+      return false;
+    }
+
+    let profile: WalletProfile | null = null;
+
+    try {
+      profile = await setActiveWalletBridge({
+        accountId,
+      });
+    } catch {
+      return false;
+    }
+
+    activeAccountId.value = accountId;
+
+    if (profile) {
+      upsertWalletProfile(profile, {
+        unlocked: options.lock ? false : isUnlocked.value,
+        makeActive: true,
+      });
+    } else {
+      if (options.lock) {
+        isUnlocked.value = false;
+      }
+    }
+
+    if (options.lock) {
+      isUnlocked.value = false;
+    }
+
+    return true;
+  }
+
   async function setBiometricEnabled(nextValue: boolean) {
+    if (!activeAccountId.value) {
+      return false;
+    }
+
     let profile: WalletProfile | null = null;
 
     try {
       profile = await updateBiometricSetting({
+        accountId: activeAccountId.value,
         isBiometricEnabled: nextValue,
       });
     } catch {
@@ -128,7 +216,10 @@ export const useSessionStore = defineStore("session", () => {
       return false;
     }
 
-    applyWalletProfile(profile, { unlocked: isUnlocked.value });
+    upsertWalletProfile(profile, {
+      unlocked: isUnlocked.value,
+      makeActive: true,
+    });
     return true;
   }
 
@@ -139,7 +230,11 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   return {
+    accountCount,
+    activeAccountId,
+    activeWalletProfile,
     applyWalletProfile,
+    applyWalletSession,
     bootstrap,
     createdAt,
     hasBackedUpMnemonic,
@@ -151,12 +246,14 @@ export const useSessionStore = defineStore("session", () => {
     lockWallet,
     primaryAddress,
     resetSession,
+    selectWalletAccount,
     setBiometricEnabled,
     shellMode,
     statusLabel,
     unlockWallet,
     updateLastVisitedRoute,
     walletLabel,
+    walletProfiles,
     walletSecretKind,
     walletSource,
   };

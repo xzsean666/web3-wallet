@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
 import {
@@ -16,6 +16,7 @@ const sessionStore = useSessionStore();
 const confirmed = ref(false);
 const formError = ref("");
 const words = ref<string[]>([]);
+const backTarget = computed(() => (sessionStore.hasWallet ? "/settings/accounts" : "/welcome"));
 
 onMounted(async () => {
   if (!onboardingStore.hasPendingBackup) {
@@ -51,7 +52,7 @@ async function finalizeBackup() {
 async function cancelFlow() {
   await cancelPendingWallet();
   onboardingStore.clearDraft();
-  await router.replace("/welcome");
+  await router.replace(backTarget.value);
 }
 </script>
 
@@ -62,7 +63,8 @@ async function cancelFlow() {
         <p class="eyebrow">Backup Phrase</p>
         <h1>这一步不要偷懒，助记词只展示一次。</h1>
         <p class="subtitle">
-          当前页面只为创建钱包服务。确认后会进入钱包首页壳，后续里程碑再把真正的安全存储闭环补完整。
+          当前页面只服务于创建钱包流程。确认离线备份后会直接进入资产首页，
+          钱包资料会继续保持在本地安全边界内。
         </p>
       </div>
       <SectionCard title="Warning" description="任何人拿到这组词都能控制你的钱包" tone="warning">
@@ -98,8 +100,8 @@ async function cancelFlow() {
           <button class="button button--ghost" type="button" @click="cancelFlow">
             取消创建流程
           </button>
-          <RouterLink class="button button--ghost" to="/onboarding/create">
-            返回上一步
+          <RouterLink class="button button--ghost" :to="backTarget">
+            {{ sessionStore.hasWallet ? "返回账号管理" : "返回上一步" }}
           </RouterLink>
         </div>
       </SectionCard>

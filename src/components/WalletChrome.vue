@@ -14,7 +14,7 @@ defineProps<{
 const sessionStore = useSessionStore();
 const networksStore = useNetworksStore();
 
-const { primaryAddress, walletLabel } = storeToRefs(sessionStore);
+const { accountCount, primaryAddress, walletLabel } = storeToRefs(sessionStore);
 const { activeNetwork } = storeToRefs(networksStore);
 </script>
 
@@ -32,6 +32,9 @@ const { activeNetwork } = storeToRefs(networksStore);
         <span class="meta-pill meta-pill--subtle">
           {{ walletLabel || shortenAddress(primaryAddress) }}
         </span>
+        <RouterLink class="meta-pill meta-pill--subtle" to="/settings/accounts">
+          {{ accountCount }} Accounts
+        </RouterLink>
       </div>
     </header>
 
@@ -49,4 +52,3 @@ const { activeNetwork } = storeToRefs(networksStore);
     <slot />
   </main>
 </template>
-

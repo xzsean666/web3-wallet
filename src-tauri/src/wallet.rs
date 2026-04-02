@@ -30,7 +30,7 @@ use zeroize::Zeroizing;
 const STRONGHOLD_CLIENT: &[u8] = b"wallet-core";
 const STRONGHOLD_RECORD: &[u8] = b"primary-secret";
 const SALT_LENGTH: usize = 32;
-const ETH_BIP44_PATH: [u32; 5] = [44 + BIP32_HARDEN, 60 + BIP32_HARDEN, 0 + BIP32_HARDEN, 0, 0];
+const ETH_BIP44_PREFIX: [u32; 4] = [44 + BIP32_HARDEN, 60 + BIP32_HARDEN, 0 + BIP32_HARDEN, 0];
 const BIP32_HARDEN: u32 = 0x8000_0000;
 
 type HmacSha512 = Hmac<Sha512>;
@@ -56,6 +56,8 @@ struct WalletPaths {
 
 #[derive(Debug)]
 struct StoredWalletMetadata {
+    account_id: String,
+    derivation_index: u32,
     wallet_label: String,
     address: String,
     source: WalletSource,
@@ -122,6 +124,8 @@ impl WalletSource {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingWalletDraft {
+    account_id: String,
+    derivation_index: u32,
     wallet_label: String,
     address: String,
     is_biometric_enabled: bool,
@@ -133,6 +137,8 @@ pub struct PendingWalletDraft {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WalletProfile {
+    account_id: String,
+    derivation_index: u32,
     wallet_label: String,
     address: String,
     source: WalletSource,
@@ -146,6 +152,8 @@ pub struct WalletProfile {
 impl From<StoredWalletMetadata> for WalletProfile {
     fn from(value: StoredWalletMetadata) -> Self {
         Self {
+            account_id: value.account_id,
+            derivation_index: value.derivation_index,
             wallet_label: value.wallet_label,
             address: value.address,
             source: value.source,
@@ -156,6 +164,13 @@ impl From<StoredWalletMetadata> for WalletProfile {
             last_unlocked_at: value.last_unlocked_at,
         }
     }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletSessionSnapshot {
+    accounts: Vec<WalletProfile>,
+    active_account_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -179,7 +194,29 @@ pub struct ImportWalletRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateBiometricRequest {
+    account_id: String,
     is_biometric_enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnlockWalletRequest {
+    account_id: String,
+    password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetActiveWalletRequest {
+    account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeriveMnemonicAccountRequest {
+    source_account_id: String,
+    wallet_label: String,
+    password: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -199,6 +236,7 @@ pub enum TransferAsset {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignTransferRequest {
+    account_id: String,
     password: String,
     chain_id: String,
     nonce: String,
@@ -225,14 +263,16 @@ enum WalletError {
     EmptyWalletLabel,
     #[error("钱包密码至少需要 8 位")]
     PasswordTooShort,
-    #[error("当前钱包已存在，MVP 只支持单钱包")]
-    WalletAlreadyExists,
     #[error("当前没有待确认的创建流程")]
     NoPendingWallet,
     #[error("待确认钱包数据异常")]
     InvalidPendingWallet,
     #[error("导入内容不能为空")]
     EmptyImportSecret,
+    #[error("当前地址已经存在于账号列表")]
+    DuplicateWalletAddress,
+    #[error("只有助记词账号支持派生新地址")]
+    MnemonicDerivationNotSupported,
     #[error("助记词格式不正确")]
     InvalidMnemonic(#[from] bip39::Error),
     #[error("私钥格式不正确，需要 64 位十六进制字符串")]
@@ -276,14 +316,17 @@ pub fn create_wallet(
     request: CreateWalletRequest,
 ) -> WalletCommandResult<PendingWalletDraft> {
     let request = normalize_create_request(request)?;
-    ensure_wallet_not_initialized(&app)?;
 
     let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
     let mnemonic_phrase = Zeroizing::new(mnemonic.to_string());
-    let private_key = derive_private_key_from_mnemonic(&mnemonic)?;
+    let private_key = derive_private_key_from_mnemonic(&mnemonic, 0)?;
     let address = address_from_private_key(private_key.as_ref())?;
+    ensure_wallet_address_is_unique(&app, &address)?;
+    let account_id = build_account_id(&address);
 
     let draft = PendingWalletDraft {
+        account_id,
+        derivation_index: 0,
         wallet_label: request.wallet_label,
         address,
         is_biometric_enabled: request.is_biometric_enabled,
@@ -342,12 +385,12 @@ pub fn finalize_pending_wallet(
     app: AppHandle,
     state: State<'_, WalletRuntimeState>,
 ) -> WalletCommandResult<WalletProfile> {
-    ensure_wallet_not_initialized(&app)?;
-
     let pending = {
         let mut guard = state.pending_onboarding.lock().unwrap();
         guard.take().ok_or(WalletError::NoPendingWallet)?
     };
+
+    ensure_wallet_address_is_unique(&app, &pending.draft.address)?;
 
     let result = persist_wallet_secret(
         &app,
@@ -355,6 +398,8 @@ pub fn finalize_pending_wallet(
         pending.mnemonic.as_bytes(),
         SecretKind::Mnemonic,
         &StoredWalletMetadata {
+            account_id: pending.draft.account_id.clone(),
+            derivation_index: pending.draft.derivation_index,
             wallet_label: pending.draft.wallet_label.clone(),
             address: pending.draft.address.clone(),
             source: WalletSource::Created,
@@ -363,8 +408,7 @@ pub fn finalize_pending_wallet(
             has_backed_up_mnemonic: true,
             created_at: pending.draft.created_at.clone(),
             last_unlocked_at: Some(now_rfc3339()),
-            snapshot_path: wallet_paths(&app)?
-                .snapshot_path
+            snapshot_path: snapshot_path_for_account(&app, &pending.draft.account_id)?
                 .to_string_lossy()
                 .into_owned(),
         },
@@ -387,7 +431,6 @@ pub fn import_wallet(
     request: ImportWalletRequest,
 ) -> WalletCommandResult<WalletProfile> {
     let request = normalize_import_request(request)?;
-    ensure_wallet_not_initialized(&app)?;
 
     {
         let mut guard = state.pending_onboarding.lock().unwrap();
@@ -398,7 +441,7 @@ pub fn import_wallet(
         SecretKind::Mnemonic => {
             let normalized = normalize_mnemonic_phrase(&request.secret_value);
             let mnemonic = Mnemonic::parse_in_normalized(Language::English, &normalized)?;
-            let private_key = derive_private_key_from_mnemonic(&mnemonic)?;
+            let private_key = derive_private_key_from_mnemonic(&mnemonic, 0)?;
             (
                 address_from_private_key(private_key.as_ref())?,
                 Zeroizing::new(normalized.into_bytes()),
@@ -413,12 +456,17 @@ pub fn import_wallet(
         }
     };
 
+    ensure_wallet_address_is_unique(&app, &address)?;
+    let account_id = build_account_id(&address);
+
     persist_wallet_secret(
         &app,
         &request.password,
         secret_bytes.as_ref(),
         request.secret_kind,
         &StoredWalletMetadata {
+            account_id: account_id.clone(),
+            derivation_index: 0,
             wallet_label: request.wallet_label,
             address,
             source: WalletSource::Imported,
@@ -427,8 +475,7 @@ pub fn import_wallet(
             has_backed_up_mnemonic: false,
             created_at: now_rfc3339(),
             last_unlocked_at: Some(now_rfc3339()),
-            snapshot_path: wallet_paths(&app)?
-                .snapshot_path
+            snapshot_path: snapshot_path_for_account(&app, &account_id)?
                 .to_string_lossy()
                 .into_owned(),
         },
@@ -437,34 +484,99 @@ pub fn import_wallet(
 }
 
 #[tauri::command]
+pub fn derive_mnemonic_account(
+    app: AppHandle,
+    request: DeriveMnemonicAccountRequest,
+) -> WalletCommandResult<WalletProfile> {
+    let request = normalize_derive_request(request)?;
+    let source_metadata = load_wallet_metadata(&app, &request.source_account_id)?
+        .ok_or(WalletError::WalletNotInitialized)?;
+
+    if source_metadata.secret_kind != SecretKind::Mnemonic {
+        return Err(WalletError::MnemonicDerivationNotSupported.to_string());
+    }
+
+    let mnemonic = load_mnemonic_for_derivation(&app, &source_metadata, &request.password)?;
+    let next_derivation_index = next_mnemonic_derivation_index(&app, &source_metadata.snapshot_path)?;
+    let private_key = derive_private_key_from_mnemonic(&mnemonic, next_derivation_index)?;
+    let address = address_from_private_key(private_key.as_ref())?;
+    ensure_wallet_address_is_unique(&app, &address)?;
+
+    let now = now_rfc3339();
+    let next_metadata = StoredWalletMetadata {
+        account_id: build_account_id(&address),
+        derivation_index: next_derivation_index,
+        wallet_label: request.wallet_label,
+        address,
+        source: source_metadata.source,
+        secret_kind: SecretKind::Mnemonic,
+        is_biometric_enabled: source_metadata.is_biometric_enabled,
+        has_backed_up_mnemonic: source_metadata.has_backed_up_mnemonic,
+        created_at: now.clone(),
+        last_unlocked_at: Some(now),
+        snapshot_path: source_metadata.snapshot_path,
+    };
+
+    save_wallet_metadata(&app, &next_metadata)?;
+    save_active_account_id(&app, Some(&next_metadata.account_id))?;
+
+    Ok(next_metadata.into())
+}
+
+#[tauri::command]
+pub fn load_wallet_session(app: AppHandle) -> WalletCommandResult<WalletSessionSnapshot> {
+    let accounts = load_wallet_accounts(&app)?
+        .into_iter()
+        .map(WalletProfile::from)
+        .collect::<Vec<_>>();
+
+    Ok(WalletSessionSnapshot {
+        accounts,
+        active_account_id: load_active_account_id(&app)?,
+    })
+}
+
+#[tauri::command]
 pub fn load_wallet_profile(app: AppHandle) -> WalletCommandResult<Option<WalletProfile>> {
-    Ok(load_wallet_metadata(&app)?.map(Into::into))
+    let active_account_id = load_active_account_id(&app)?;
+    let metadata = match active_account_id {
+        Some(account_id) => load_wallet_metadata(&app, &account_id)?,
+        None => load_wallet_accounts(&app)?.into_iter().next(),
+    };
+
+    Ok(metadata.map(Into::into))
 }
 
 #[tauri::command]
 pub fn unlock_wallet(
     app: AppHandle,
-    password: String,
+    request: UnlockWalletRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
-    let metadata = match load_wallet_metadata(&app)? {
+    let metadata = match load_wallet_metadata(&app, &request.account_id)? {
         Some(metadata) => metadata,
         None => return Ok(None),
     };
 
     let stronghold = open_stronghold(
         Path::new(&metadata.snapshot_path),
-        &password,
+        &request.password,
         &wallet_paths(&app)?.salt_path,
     );
 
-    if stronghold.is_err() {
+    let stronghold = match stronghold {
+        Ok(stronghold) => stronghold,
+        Err(_) => return Ok(None),
+    };
+
+    if stronghold.load_client(STRONGHOLD_CLIENT.to_vec()).is_err() {
         return Ok(None);
     }
 
     let unlocked_at = now_rfc3339();
-    update_last_unlocked_at(&app, &unlocked_at)?;
+    update_last_unlocked_at(&app, &request.account_id, &unlocked_at)?;
+    save_active_account_id(&app, Some(&request.account_id))?;
 
-    let mut next_metadata = load_wallet_metadata(&app)?.ok_or_else(|| {
+    let mut next_metadata = load_wallet_metadata(&app, &request.account_id)?.ok_or_else(|| {
         WalletError::MetadataCorrupted("wallet metadata missing after unlock".into())
     })?;
     next_metadata.last_unlocked_at = Some(unlocked_at);
@@ -473,11 +585,25 @@ pub fn unlock_wallet(
 }
 
 #[tauri::command]
+pub fn set_active_wallet(
+    app: AppHandle,
+    request: SetActiveWalletRequest,
+) -> WalletCommandResult<Option<WalletProfile>> {
+    let metadata = match load_wallet_metadata(&app, &request.account_id)? {
+        Some(metadata) => metadata,
+        None => return Ok(None),
+    };
+
+    save_active_account_id(&app, Some(&request.account_id))?;
+    Ok(Some(metadata.into()))
+}
+
+#[tauri::command]
 pub fn update_biometric_setting(
     app: AppHandle,
     request: UpdateBiometricRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
-    let metadata = match load_wallet_metadata(&app)? {
+    let metadata = match load_wallet_metadata(&app, &request.account_id)? {
         Some(metadata) => metadata,
         None => return Ok(None),
     };
@@ -497,7 +623,8 @@ pub fn sign_transfer_transaction(
     app: AppHandle,
     request: SignTransferRequest,
 ) -> WalletCommandResult<SignedTransferPayload> {
-    let metadata = load_wallet_metadata(&app)?.ok_or(WalletError::WalletNotInitialized)?;
+    let metadata = load_wallet_metadata(&app, &request.account_id)?
+        .ok_or(WalletError::WalletNotInitialized)?;
     let private_key = load_private_key_for_signing(&app, &metadata, &request.password)?;
     let tx = build_transfer_transaction(&request)?;
 
@@ -562,12 +689,24 @@ fn normalize_import_request(
     })
 }
 
-fn ensure_wallet_not_initialized(app: &AppHandle) -> Result<(), WalletError> {
-    if load_wallet_metadata(app)?.is_some() || wallet_paths(app)?.snapshot_path.exists() {
-        Err(WalletError::WalletAlreadyExists)
-    } else {
-        Ok(())
+fn normalize_derive_request(
+    request: DeriveMnemonicAccountRequest,
+) -> Result<DeriveMnemonicAccountRequest, WalletError> {
+    let wallet_label = request.wallet_label.trim().to_owned();
+
+    if wallet_label.is_empty() {
+        return Err(WalletError::EmptyWalletLabel);
     }
+
+    if request.password.len() < 8 {
+        return Err(WalletError::PasswordTooShort);
+    }
+
+    Ok(DeriveMnemonicAccountRequest {
+        source_account_id: request.source_account_id,
+        wallet_label,
+        password: request.password,
+    })
 }
 
 fn now_rfc3339() -> String {
@@ -596,17 +735,24 @@ fn normalize_private_key(value: &str) -> Result<[u8; 32], WalletError> {
 
 fn derive_private_key_from_mnemonic(
     mnemonic: &Mnemonic,
+    derivation_index: u32,
 ) -> Result<Zeroizing<[u8; 32]>, WalletError> {
     let seed = Zeroizing::new(mnemonic.to_seed_normalized(""));
-    derive_private_key_from_seed(seed.as_ref())
+    derive_private_key_from_seed(seed.as_ref(), derivation_index)
 }
 
-fn derive_private_key_from_seed(seed: &[u8]) -> Result<Zeroizing<[u8; 32]>, WalletError> {
+fn derive_private_key_from_seed(
+    seed: &[u8],
+    derivation_index: u32,
+) -> Result<Zeroizing<[u8; 32]>, WalletError> {
     let (mut signing_key, mut chain_code) = root_signing_key_from_seed(seed)?;
 
-    for index in ETH_BIP44_PATH {
+    for index in ETH_BIP44_PREFIX {
         (signing_key, chain_code) = derive_child_signing_key(&signing_key, &chain_code, index)?;
     }
+
+    (signing_key, chain_code) =
+        derive_child_signing_key(&signing_key, &chain_code, derivation_index)?;
 
     let mut private_key = [0u8; 32];
     private_key.copy_from_slice(&signing_key.to_bytes());
@@ -699,6 +845,63 @@ fn load_private_key_for_signing(
     metadata: &StoredWalletMetadata,
     password: &str,
 ) -> Result<Zeroizing<[u8; 32]>, WalletError> {
+    let (secret_kind, secret_record) = load_secret_record(app, metadata, password)?;
+    let secret_bytes = &secret_record;
+    let private_key = match secret_kind {
+        SecretKind::Mnemonic => {
+            let mnemonic_phrase =
+                std::str::from_utf8(secret_bytes).map_err(|_| WalletError::InvalidStoredSecret)?;
+            let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic_phrase)?;
+            derive_private_key_from_mnemonic(&mnemonic, metadata.derivation_index)?
+        }
+        SecretKind::PrivateKey => {
+            if secret_bytes.len() != 32 {
+                return Err(WalletError::InvalidStoredSecret);
+            }
+
+            let mut private_key = [0u8; 32];
+            private_key.copy_from_slice(secret_bytes);
+            Zeroizing::new(private_key)
+        }
+    };
+
+    let derived_address = address_from_private_key(private_key.as_ref())?;
+    if derived_address != metadata.address {
+        return Err(WalletError::InvalidStoredSecret);
+    }
+
+    Ok(private_key)
+}
+
+fn load_mnemonic_for_derivation(
+    app: &AppHandle,
+    metadata: &StoredWalletMetadata,
+    password: &str,
+) -> Result<Mnemonic, WalletError> {
+    let (secret_kind, secret_record) = load_secret_record(app, metadata, password)?;
+
+    if secret_kind != SecretKind::Mnemonic {
+        return Err(WalletError::MnemonicDerivationNotSupported);
+    }
+
+    let mnemonic_phrase =
+        std::str::from_utf8(secret_record.as_ref()).map_err(|_| WalletError::InvalidStoredSecret)?;
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic_phrase)?;
+    let derived_root_key = derive_private_key_from_mnemonic(&mnemonic, metadata.derivation_index)?;
+    let derived_address = address_from_private_key(derived_root_key.as_ref())?;
+
+    if derived_address != metadata.address {
+        return Err(WalletError::InvalidStoredSecret);
+    }
+
+    Ok(mnemonic)
+}
+
+fn load_secret_record(
+    app: &AppHandle,
+    metadata: &StoredWalletMetadata,
+    password: &str,
+) -> Result<(SecretKind, Zeroizing<Vec<u8>>), WalletError> {
     let snapshot_path = Path::new(&metadata.snapshot_path);
     let paths = wallet_paths(app)?;
 
@@ -726,31 +929,7 @@ fn load_private_key_for_signing(
         return Err(WalletError::InvalidStoredSecret);
     }
 
-    let secret_bytes = &secret_record[delimiter + 1..];
-    let private_key = match secret_kind {
-        SecretKind::Mnemonic => {
-            let mnemonic_phrase =
-                std::str::from_utf8(secret_bytes).map_err(|_| WalletError::InvalidStoredSecret)?;
-            let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic_phrase)?;
-            derive_private_key_from_mnemonic(&mnemonic)?
-        }
-        SecretKind::PrivateKey => {
-            if secret_bytes.len() != 32 {
-                return Err(WalletError::InvalidStoredSecret);
-            }
-
-            let mut private_key = [0u8; 32];
-            private_key.copy_from_slice(secret_bytes);
-            Zeroizing::new(private_key)
-        }
-    };
-
-    let derived_address = address_from_private_key(private_key.as_ref())?;
-    if derived_address != metadata.address {
-        return Err(WalletError::InvalidStoredSecret);
-    }
-
-    Ok(private_key)
+    Ok((secret_kind, Zeroizing::new(secret_record[delimiter + 1..].to_vec())))
 }
 
 fn build_transfer_transaction(
@@ -871,8 +1050,9 @@ fn persist_wallet_secret(
     metadata: &StoredWalletMetadata,
 ) -> Result<WalletProfile, WalletError> {
     let paths = wallet_paths(app)?;
-    let stronghold = open_stronghold(&paths.snapshot_path, password, &paths.salt_path)?;
-    let snapshot_path = iota_stronghold::SnapshotPath::from_path(&paths.snapshot_path);
+    let snapshot_file_path = PathBuf::from(&metadata.snapshot_path);
+    let stronghold = open_stronghold(&snapshot_file_path, password, &paths.salt_path)?;
+    let snapshot_path = iota_stronghold::SnapshotPath::from_path(&snapshot_file_path);
     let client = match stronghold.load_client(STRONGHOLD_CLIENT.to_vec()) {
         Ok(client) => client,
         Err(_) => stronghold
@@ -898,8 +1078,9 @@ fn persist_wallet_secret(
         .map_err(|error| WalletError::Stronghold(error.to_string()))?;
 
     save_wallet_metadata(app, metadata)?;
+    save_active_account_id(app, Some(&metadata.account_id))?;
 
-    Ok(load_wallet_metadata(app)?
+    Ok(load_wallet_metadata(app, &metadata.account_id)?
         .ok_or_else(|| WalletError::MetadataCorrupted("wallet metadata missing after save".into()))?
         .into())
 }
@@ -967,14 +1148,22 @@ fn wallet_paths(app: &AppHandle) -> Result<WalletPaths, WalletError> {
     })
 }
 
+fn snapshot_path_for_account(app: &AppHandle, account_id: &str) -> Result<PathBuf, WalletError> {
+    let paths = wallet_paths(app)?;
+    Ok(paths
+        .metadata_db_path
+        .with_file_name(format!("{account_id}.stronghold")))
+}
+
 fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
     let paths = wallet_paths(app)?;
     let connection = Connection::open(paths.metadata_db_path)?;
 
     connection.execute_batch(
         r#"
-        CREATE TABLE IF NOT EXISTS wallet_profile (
-          id INTEGER PRIMARY KEY CHECK (id = 1),
+        CREATE TABLE IF NOT EXISTS wallet_accounts (
+          account_id TEXT PRIMARY KEY,
+          derivation_index INTEGER NOT NULL DEFAULT 0,
           wallet_label TEXT NOT NULL,
           address TEXT NOT NULL,
           source TEXT NOT NULL,
@@ -985,16 +1174,222 @@ fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
           last_unlocked_at TEXT,
           snapshot_path TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS wallet_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          active_account_id TEXT
+        );
         "#,
     )?;
+
+    ensure_wallet_accounts_schema(&connection)?;
+    migrate_legacy_wallet_profile(app, &connection)?;
 
     Ok(connection)
 }
 
-fn load_wallet_metadata(app: &AppHandle) -> Result<Option<StoredWalletMetadata>, WalletError> {
+fn ensure_wallet_accounts_schema(connection: &Connection) -> Result<(), WalletError> {
+    let mut statement = connection.prepare("PRAGMA table_info(wallet_accounts)")?;
+    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let mut columns = Vec::new();
+
+    for row in rows {
+        columns.push(row?);
+    }
+
+    if !columns.iter().any(|column| column == "derivation_index") {
+        connection.execute(
+            "ALTER TABLE wallet_accounts ADD COLUMN derivation_index INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+    }
+
+    Ok(())
+}
+
+fn load_wallet_accounts(app: &AppHandle) -> Result<Vec<StoredWalletMetadata>, WalletError> {
+    let connection = metadata_connection(app)?;
+
+    let mut statement = connection.prepare(
+        r#"
+        SELECT
+          account_id,
+          derivation_index,
+          wallet_label,
+          address,
+          source,
+          secret_kind,
+          biometric_enabled,
+          has_backed_up_mnemonic,
+          created_at,
+          last_unlocked_at,
+          snapshot_path
+        FROM wallet_accounts
+        ORDER BY datetime(created_at) DESC
+        "#,
+    )?;
+
+    let rows = statement.query_map([], load_wallet_metadata_from_row)?;
+    let mut accounts = Vec::new();
+
+    for row in rows {
+        accounts.push(row?);
+    }
+
+    Ok(accounts)
+}
+
+fn load_wallet_metadata(
+    app: &AppHandle,
+    account_id: &str,
+) -> Result<Option<StoredWalletMetadata>, WalletError> {
     let connection = metadata_connection(app)?;
 
     connection
+        .query_row(
+            r#"
+            SELECT
+              account_id,
+              derivation_index,
+              wallet_label,
+              address,
+              source,
+              secret_kind,
+              biometric_enabled,
+              has_backed_up_mnemonic,
+              created_at,
+              last_unlocked_at,
+              snapshot_path
+            FROM wallet_accounts
+            WHERE account_id = ?1
+            "#,
+            params![account_id],
+            load_wallet_metadata_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn load_active_account_id(app: &AppHandle) -> Result<Option<String>, WalletError> {
+    let connection = metadata_connection(app)?;
+
+    connection
+        .query_row(
+            "SELECT active_account_id FROM wallet_state WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map(|value| value.flatten())
+        .map_err(Into::into)
+}
+
+fn save_active_account_id(
+    app: &AppHandle,
+    account_id: Option<&str>,
+) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    connection.execute(
+        r#"
+        INSERT INTO wallet_state (
+          id,
+          active_account_id
+        )
+        VALUES (1, ?1)
+        ON CONFLICT(id) DO UPDATE SET
+          active_account_id = excluded.active_account_id
+        "#,
+        params![account_id],
+    )?;
+
+    Ok(())
+}
+
+fn save_wallet_metadata(app: &AppHandle, metadata: &StoredWalletMetadata) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    connection.execute(
+        r#"
+        INSERT INTO wallet_accounts (
+          account_id,
+          derivation_index,
+          wallet_label,
+          address,
+          source,
+          secret_kind,
+          biometric_enabled,
+          has_backed_up_mnemonic,
+          created_at,
+          last_unlocked_at,
+          snapshot_path
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(account_id) DO UPDATE SET
+          derivation_index = excluded.derivation_index,
+          wallet_label = excluded.wallet_label,
+          address = excluded.address,
+          source = excluded.source,
+          secret_kind = excluded.secret_kind,
+          biometric_enabled = excluded.biometric_enabled,
+          has_backed_up_mnemonic = excluded.has_backed_up_mnemonic,
+          created_at = excluded.created_at,
+          last_unlocked_at = excluded.last_unlocked_at,
+          snapshot_path = excluded.snapshot_path
+        "#,
+        params![
+            &metadata.account_id,
+            metadata.derivation_index as i64,
+            &metadata.wallet_label,
+            &metadata.address,
+            metadata.source.as_str(),
+            metadata.secret_kind.as_str(),
+            metadata.is_biometric_enabled as i64,
+            metadata.has_backed_up_mnemonic as i64,
+            &metadata.created_at,
+            &metadata.last_unlocked_at,
+            &metadata.snapshot_path,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn update_last_unlocked_at(
+    app: &AppHandle,
+    account_id: &str,
+    last_unlocked_at: &str,
+) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    connection.execute(
+        "UPDATE wallet_accounts SET last_unlocked_at = ?1 WHERE account_id = ?2",
+        params![last_unlocked_at, account_id],
+    )?;
+    Ok(())
+}
+
+fn migrate_legacy_wallet_profile(
+    app: &AppHandle,
+    connection: &Connection,
+) -> Result<(), WalletError> {
+    let has_legacy_table = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wallet_profile')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )? != 0;
+
+    if !has_legacy_table {
+        return Ok(());
+    }
+
+    let existing_count = connection.query_row(
+        "SELECT COUNT(*) FROM wallet_accounts",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    if existing_count > 0 {
+        return Ok(());
+    }
+
+    let legacy = connection
         .query_row(
             r#"
             SELECT
@@ -1012,9 +1407,13 @@ fn load_wallet_metadata(app: &AppHandle) -> Result<Option<StoredWalletMetadata>,
             "#,
             [],
             |row| {
+                let address: String = row.get(1)?;
+
                 Ok(StoredWalletMetadata {
+                    account_id: build_account_id(&address),
+                    derivation_index: 0,
                     wallet_label: row.get(0)?,
-                    address: row.get(1)?,
+                    address,
                     source: WalletSource::from_db_value(&row.get::<_, String>(2)?)
                         .map_err(to_sql_conversion_error)?,
                     secret_kind: SecretKind::from_db_value(&row.get::<_, String>(3)?)
@@ -1027,65 +1426,108 @@ fn load_wallet_metadata(app: &AppHandle) -> Result<Option<StoredWalletMetadata>,
                 })
             },
         )
-        .optional()
-        .map_err(Into::into)
+        .optional()?;
+
+    if let Some(metadata) = legacy {
+        connection.execute(
+            r#"
+            INSERT OR IGNORE INTO wallet_accounts (
+              account_id,
+              derivation_index,
+              wallet_label,
+              address,
+              source,
+              secret_kind,
+              biometric_enabled,
+              has_backed_up_mnemonic,
+              created_at,
+              last_unlocked_at,
+              snapshot_path
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            "#,
+            params![
+                &metadata.account_id,
+                metadata.derivation_index as i64,
+                &metadata.wallet_label,
+                &metadata.address,
+                metadata.source.as_str(),
+                metadata.secret_kind.as_str(),
+                metadata.is_biometric_enabled as i64,
+                metadata.has_backed_up_mnemonic as i64,
+                &metadata.created_at,
+                &metadata.last_unlocked_at,
+                &metadata.snapshot_path,
+            ],
+        )?;
+
+        let active_account_id = metadata.account_id.clone();
+        connection.execute(
+            r#"
+            INSERT INTO wallet_state (id, active_account_id)
+            VALUES (1, ?1)
+            ON CONFLICT(id) DO UPDATE SET
+              active_account_id = excluded.active_account_id
+            "#,
+            params![active_account_id],
+        )?;
+    }
+
+    let _ = app;
+
+    Ok(())
 }
 
-fn save_wallet_metadata(
+fn load_wallet_metadata_from_row(row: &rusqlite::Row<'_>) -> Result<StoredWalletMetadata, rusqlite::Error> {
+    Ok(StoredWalletMetadata {
+        account_id: row.get(0)?,
+        derivation_index: row.get::<_, i64>(1)? as u32,
+        wallet_label: row.get(2)?,
+        address: row.get(3)?,
+        source: WalletSource::from_db_value(&row.get::<_, String>(4)?)
+            .map_err(to_sql_conversion_error)?,
+        secret_kind: SecretKind::from_db_value(&row.get::<_, String>(5)?)
+            .map_err(to_sql_conversion_error)?,
+        is_biometric_enabled: row.get::<_, i64>(6)? != 0,
+        has_backed_up_mnemonic: row.get::<_, i64>(7)? != 0,
+        created_at: row.get(8)?,
+        last_unlocked_at: row.get(9)?,
+        snapshot_path: row.get(10)?,
+    })
+}
+
+fn build_account_id(address: &str) -> String {
+    format!("account-{}", address.trim().to_lowercase())
+}
+
+fn ensure_wallet_address_is_unique(app: &AppHandle, address: &str) -> Result<(), WalletError> {
+    let normalized = address.trim().to_lowercase();
+
+    if load_wallet_accounts(app)?
+        .into_iter()
+        .any(|metadata| metadata.address.to_lowercase() == normalized)
+    {
+        Err(WalletError::DuplicateWalletAddress)
+    } else {
+        Ok(())
+    }
+}
+
+fn next_mnemonic_derivation_index(
     app: &AppHandle,
-    metadata: &StoredWalletMetadata,
-) -> Result<(), WalletError> {
-    let connection = metadata_connection(app)?;
-    connection.execute(
-        r#"
-        INSERT INTO wallet_profile (
-          id,
-          wallet_label,
-          address,
-          source,
-          secret_kind,
-          biometric_enabled,
-          has_backed_up_mnemonic,
-          created_at,
-          last_unlocked_at,
-          snapshot_path
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-        ON CONFLICT(id) DO UPDATE SET
-          wallet_label = excluded.wallet_label,
-          address = excluded.address,
-          source = excluded.source,
-          secret_kind = excluded.secret_kind,
-          biometric_enabled = excluded.biometric_enabled,
-          has_backed_up_mnemonic = excluded.has_backed_up_mnemonic,
-          created_at = excluded.created_at,
-          last_unlocked_at = excluded.last_unlocked_at,
-          snapshot_path = excluded.snapshot_path
-        "#,
-        params![
-            1_i64,
-            &metadata.wallet_label,
-            &metadata.address,
-            metadata.source.as_str(),
-            metadata.secret_kind.as_str(),
-            metadata.is_biometric_enabled as i64,
-            metadata.has_backed_up_mnemonic as i64,
-            &metadata.created_at,
-            &metadata.last_unlocked_at,
-            &metadata.snapshot_path,
-        ],
-    )?;
+    snapshot_path: &str,
+) -> Result<u32, WalletError> {
+    let accounts = load_wallet_accounts(app)?;
+    let max_index = accounts
+        .into_iter()
+        .filter(|metadata| {
+            metadata.secret_kind == SecretKind::Mnemonic && metadata.snapshot_path == snapshot_path
+        })
+        .map(|metadata| metadata.derivation_index)
+        .max()
+        .unwrap_or(0);
 
-    Ok(())
-}
-
-fn update_last_unlocked_at(app: &AppHandle, last_unlocked_at: &str) -> Result<(), WalletError> {
-    let connection = metadata_connection(app)?;
-    connection.execute(
-        "UPDATE wallet_profile SET last_unlocked_at = ?1 WHERE id = 1",
-        params![last_unlocked_at],
-    )?;
-    Ok(())
+    Ok(max_index.saturating_add(1))
 }
 
 fn to_sql_conversion_error(error: WalletError) -> rusqlite::Error {

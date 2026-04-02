@@ -83,6 +83,30 @@ export const router = createRouter({
       meta: { requiresUnlocked: true },
     },
     {
+      path: "/settings/accounts",
+      name: "account-settings",
+      component: () => import("../pages/settings/AccountsPage.vue"),
+      meta: { requiresUnlocked: true },
+    },
+    {
+      path: "/settings/accounts/create",
+      name: "account-create",
+      component: () => import("../pages/onboarding/CreateWalletPage.vue"),
+      meta: { requiresUnlocked: true },
+    },
+    {
+      path: "/settings/accounts/import",
+      name: "account-import",
+      component: () => import("../pages/onboarding/ImportWalletPage.vue"),
+      meta: { requiresUnlocked: true },
+    },
+    {
+      path: "/settings/address-book",
+      name: "address-book-settings",
+      component: () => import("../pages/settings/AddressBookPage.vue"),
+      meta: { requiresUnlocked: true },
+    },
+    {
       path: "/settings",
       name: "settings",
       component: () => import("../pages/settings/SettingsPage.vue"),

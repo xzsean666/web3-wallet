@@ -1,24 +1,29 @@
 <script setup lang="ts">
-import { ref } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { computed, ref } from "vue";
+import { RouterLink, useRoute, useRouter } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
 import { importWallet } from "../../services/walletBridge";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { useSessionStore } from "../../stores/session";
 import type { SecretKind } from "../../types/wallet";
 
+const route = useRoute();
 const router = useRouter();
 const onboardingStore = useOnboardingStore();
 const sessionStore = useSessionStore();
 
+const isAddAccountMode = computed(() => route.name === "account-import");
 const importMode = ref<SecretKind>("mnemonic");
-const walletLabel = ref("Imported Wallet");
+const walletLabel = ref(
+  isAddAccountMode.value ? `Imported Account ${sessionStore.accountCount + 1}` : "Imported Wallet",
+);
 const secretValue = ref("");
 const password = ref("");
 const confirmPassword = ref("");
 const enableBiometric = ref(true);
 const formError = ref("");
 const isSubmitting = ref(false);
+const backTarget = computed(() => (isAddAccountMode.value ? "/settings/accounts" : "/welcome"));
 
 async function submitImport() {
   formError.value = "";
@@ -73,13 +78,17 @@ async function submitImport() {
   <main class="page-shell">
     <section class="marketing-hero marketing-hero--compact">
       <div class="hero-copy">
-        <p class="eyebrow">Import Wallet</p>
-        <h1>导入只接受助记词或私钥，其他都不支持。</h1>
+        <p class="eyebrow">{{ isAddAccountMode ? "Import Account" : "Import Wallet" }}</p>
+        <h1>{{ isAddAccountMode ? "新增账号时只接受助记词或私钥导入。" : "导入只接受助记词或私钥，其他都不支持。" }}</h1>
         <p class="subtitle">
-          MVP 不做扩展同步、硬件钱包或社交恢复。把输入范围压小，先把导入链路和地址推导做对。
+          {{
+            isAddAccountMode
+              ? "新增账号不会走云同步、硬件钱包或社交恢复。先把助记词和私钥导入链路做稳。"
+              : "MVP 不做扩展同步、硬件钱包或社交恢复。把输入范围压小，先把导入链路和地址推导做对。"
+          }}
         </p>
       </div>
-      <SectionCard title="Import Scope" description="当前可导入形式">
+      <SectionCard title="Import Scope" :description="isAddAccountMode ? '当前可新增的账号来源' : '当前可导入形式'">
         <ul class="bullet-list">
           <li>助记词</li>
           <li>单个私钥</li>
@@ -89,7 +98,7 @@ async function submitImport() {
     </section>
 
     <section class="page-grid page-grid--2">
-      <SectionCard title="Import" description="选择导入方式并设置解锁密码">
+      <SectionCard :title="isAddAccountMode ? 'Import Account' : 'Import'" description="选择导入方式并设置解锁密码">
         <div class="segmented-control">
           <button
             :class="['segment', { 'segment--active': importMode === 'mnemonic' }]"
@@ -109,8 +118,12 @@ async function submitImport() {
 
         <form class="form-grid" @submit.prevent="submitImport">
           <label class="field">
-            <span>钱包名称</span>
-            <input v-model="walletLabel" autocomplete="off" placeholder="Imported Wallet" />
+            <span>{{ isAddAccountMode ? "账号名称" : "钱包名称" }}</span>
+            <input
+              v-model="walletLabel"
+              autocomplete="off"
+              :placeholder="isAddAccountMode ? `Imported Account ${sessionStore.accountCount + 1}` : 'Imported Wallet'"
+            />
           </label>
 
           <label class="field">
@@ -155,19 +168,19 @@ async function submitImport() {
 
           <div class="form-actions">
             <button :disabled="isSubmitting" class="button button--primary" type="submit">
-              {{ isSubmitting ? "正在导入..." : "导入钱包" }}
+              {{ isSubmitting ? "正在导入..." : isAddAccountMode ? "导入并切换账号" : "导入钱包" }}
             </button>
-            <RouterLink class="button button--ghost" to="/welcome">返回</RouterLink>
+            <RouterLink class="button button--ghost" :to="backTarget">返回</RouterLink>
           </div>
         </form>
       </SectionCard>
 
-      <SectionCard title="Validation" description="当前导入校验">
+      <SectionCard title="Validation" :description="isAddAccountMode ? '当前新增账号的导入校验' : '当前导入校验'">
         <ul class="bullet-list">
           <li>助记词必须能推导出 EVM 账户地址</li>
           <li>私钥必须是合法十六进制格式</li>
           <li>密码长度至少 8 位</li>
-          <li>导入后直接进入钱包首页</li>
+          <li>{{ isAddAccountMode ? "导入后会切换到新账号" : "导入后直接进入钱包首页" }}</li>
         </ul>
       </SectionCard>
     </section>

@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import { nextTick } from "vue";
+import { clearPersistedUiState } from "../../services/uiState";
 import { useNetworksStore } from "../networks";
 
 describe("networks store", () => {
   beforeEach(() => {
+    clearPersistedUiState();
     setActivePinia(createPinia());
   });
 
@@ -41,5 +44,24 @@ describe("networks store", () => {
     expect(store.customNetworks.length).toBe(0);
     expect(store.activeNetworkId).toBe("ethereum");
   });
-});
 
+  it("hydrates persisted custom networks and active network id", async () => {
+    const store = useNetworksStore();
+
+    store.saveCustomNetwork({
+      name: "Local Rollup",
+      chainId: "31337",
+      rpcUrl: "https://rpc.local-rollup.dev",
+      symbol: "LRC",
+      explorerUrl: "https://scan.local-rollup.dev",
+    });
+    await nextTick();
+
+    setActivePinia(createPinia());
+    const rehydratedStore = useNetworksStore();
+
+    expect(rehydratedStore.customNetworks).toHaveLength(1);
+    expect(rehydratedStore.activeNetworkId).toBe("custom-31337");
+    expect(rehydratedStore.activeNetwork.name).toBe("Local Rollup");
+  });
+});
