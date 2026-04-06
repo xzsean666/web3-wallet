@@ -20,7 +20,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data: blob: asset: http://localhost:1420; media-src 'self' data: blob: asset: http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; font-src 'self' data: http://localhost:1420; connect-src 'self' https://ipc.localhost http://localhost:1420 ws://localhost:1420 https:; script-src 'self' 'unsafe-eval'"
     }
   },
   "bundle": {

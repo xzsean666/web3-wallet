@@ -56,19 +56,29 @@ const contactFeedback = ref<null | {
   tone: "success" | "error";
   message: string;
 }>(null);
-const confirmation = ref<null | {
+type TransferConfirmation = {
+  accountId: string;
+  accountAddress: WalletAddress;
+  assetId: string;
   assetLabel: string;
   assetSymbol: string;
   assetType: "native" | "erc20";
+  chainId: number;
+  networkId: string;
   recipientAddress: string;
   amount: string;
   networkName: string;
+  networkSymbol: string;
   gas: TransferPreview;
-  contractAddress?: string;
-}>(null);
+  contractAddress?: WalletAddress;
+};
+
+const confirmation = ref<TransferConfirmation | null>(null);
 
 const activeTokens = computed(() => walletStore.tokensForNetwork(activeNetwork.value.id));
-const snapshot = computed(() => portfolioStore.getSnapshot(activeNetwork.value.id));
+const snapshot = computed(() =>
+  portfolioStore.getSnapshot(activeNetwork.value.id, primaryAddress.value || null),
+);
 const savedContacts = computed(() => walletStore.contactsForNetwork(activeNetwork.value.id).slice(0, 4));
 const recentRecipients = computed(() => {
   const seenAddresses = new Set<string>();
@@ -276,7 +286,12 @@ watch(activeNetwork, () => {
   }
 });
 
-watch([selectedAssetId, recipientAddress, amount, () => activeNetwork.value.id], () => {
+let balanceRefreshRequestId = 0;
+let confirmationRequestId = 0;
+let fillMaxRequestId = 0;
+
+watch([selectedAssetId, recipientAddress, amount, () => activeNetwork.value.id, activeAccountId, primaryAddress], () => {
+  confirmationRequestId += 1;
   confirmation.value = null;
   estimateFeedback.value = null;
   transferFeedback.value = null;
@@ -530,28 +545,47 @@ async function pasteRecipientAddress() {
 }
 
 async function refreshBalanceContext() {
-  if (!primaryAddress.value || isRefreshingBalance.value) {
+  if (!primaryAddress.value) {
     return;
   }
 
+  const requestId = ++balanceRefreshRequestId;
+  const requestNetwork = activeNetwork.value;
+  const requestAddress = primaryAddress.value;
+  const requestTokens = [...activeTokens.value];
+
   isRefreshingBalance.value = true;
-  portfolioStore.markLoading(activeNetwork.value.id);
+  portfolioStore.markLoading({
+    networkId: requestNetwork.id,
+    accountAddress: requestAddress,
+  });
 
   try {
     const nextSnapshot = await fetchPortfolioSnapshot({
-      network: activeNetwork.value,
-      address: primaryAddress.value,
-      tokens: activeTokens.value,
+      network: requestNetwork,
+      address: requestAddress,
+      tokens: requestTokens,
     });
+
+    if (requestId !== balanceRefreshRequestId) {
+      return;
+    }
 
     portfolioStore.setSnapshot(nextSnapshot);
   } catch (error) {
-    portfolioStore.setError(
-      activeNetwork.value.id,
-      error instanceof Error ? error.message : "Failed to load send page balances",
-    );
+    if (requestId !== balanceRefreshRequestId) {
+      return;
+    }
+
+    portfolioStore.setError({
+      networkId: requestNetwork.id,
+      accountAddress: requestAddress,
+      error: error instanceof Error ? error.message : "Failed to load send page balances",
+    });
   } finally {
-    isRefreshingBalance.value = false;
+    if (requestId === balanceRefreshRequestId) {
+      isRefreshingBalance.value = false;
+    }
   }
 }
 
@@ -648,17 +682,33 @@ async function fillMaxAmount() {
   }
 
   isFillingMax.value = true;
+  const requestId = ++fillMaxRequestId;
+  const requestNetwork = activeNetwork.value;
+  const requestAddress = primaryAddress.value;
+  const requestRecipient = normalizedRecipient;
+  const requestAssetId = selectedAssetId.value;
 
   try {
     const preview = await estimateTransferPreview({
-      network: activeNetwork.value,
-      account: primaryAddress.value,
+      network: requestNetwork,
+      account: requestAddress,
       recipientAddress: normalizedRecipient as `0x${string}`,
       amount: "0",
       asset: {
         type: "native",
       },
     });
+
+    if (
+      requestId !== fillMaxRequestId ||
+      activeNetwork.value.id !== requestNetwork.id ||
+      primaryAddress.value !== requestAddress ||
+      recipientAddress.value.trim() !== requestRecipient ||
+      selectedAssetId.value !== requestAssetId
+    ) {
+      return;
+    }
+
     const feePerGasWei =
       preview.feeMode === "legacy" ? preview.gasPriceWei : preview.maxFeePerGasWei;
 
@@ -681,7 +731,7 @@ async function fillMaxAmount() {
     setAmountFeedback({
       tone: "success",
       message: preview.estimatedNetworkFee
-        ? `已回填 Max，并预留约 ${formatTokenAmount(preview.estimatedNetworkFee)} ${activeNetwork.value.symbol} 网络费`
+        ? `已回填 Max，并预留约 ${formatTokenAmount(preview.estimatedNetworkFee)} ${requestNetwork.symbol} 网络费`
         : "已回填可发送的最大原生币数量",
     });
   } catch (error) {
@@ -695,7 +745,9 @@ async function fillMaxAmount() {
       message: feedback.message,
     });
   } finally {
-    isFillingMax.value = false;
+    if (requestId === fillMaxRequestId) {
+      isFillingMax.value = false;
+    }
   }
 }
 
@@ -739,57 +791,112 @@ async function buildConfirmation() {
     return;
   }
 
+  const requestId = ++confirmationRequestId;
+  const requestNetwork = activeNetwork.value;
+  const requestAccountId = activeAccountId.value;
+  const requestAccountAddress = primaryAddress.value;
+  const requestSelectedAsset = selectedAsset.value;
+  const requestRecipientAddress = recipientAddress.value.trim();
+  const requestAmount = amount.value.trim();
+
+  if (!requestAccountId) {
+    formErrors.value.push("当前没有激活账号，无法生成确认摘要");
+    return;
+  }
+
   isEstimating.value = true;
   const nextConfirmation = {
-    assetLabel: selectedAsset.value.label,
-    assetSymbol: selectedAsset.value.symbol,
-    assetType: selectedAsset.value.type,
-    recipientAddress: recipientAddress.value.trim(),
-    amount: amount.value.trim(),
-    networkName: activeNetwork.value.name,
+    accountId: requestAccountId,
+    accountAddress: requestAccountAddress,
+    assetId: requestSelectedAsset.id,
+    assetLabel: requestSelectedAsset.label,
+    assetSymbol: requestSelectedAsset.symbol,
+    assetType: requestSelectedAsset.type,
+    chainId: requestNetwork.chainId,
+    networkId: requestNetwork.id,
+    recipientAddress: requestRecipientAddress,
+    amount: requestAmount,
+    networkName: requestNetwork.name,
+    networkSymbol: requestNetwork.symbol,
     contractAddress:
-      selectedAsset.value.type === "erc20" ? selectedAsset.value.contractAddress : undefined,
+      requestSelectedAsset.type === "erc20" ? requestSelectedAsset.contractAddress : undefined,
   };
 
   const assetPayload =
-    selectedAsset.value.type === "native"
+    requestSelectedAsset.type === "native"
       ? { type: "native" as const }
       : {
           type: "erc20" as const,
-          token: walletStore.findTokenById(selectedAsset.value.id)!,
+          token: walletStore.findTokenById(requestSelectedAsset.id)!,
         };
 
   try {
     const preview = await estimateTransferPreview({
-      network: activeNetwork.value,
-      account: primaryAddress.value,
-      recipientAddress: recipientAddress.value.trim() as `0x${string}`,
-      amount: amount.value.trim(),
+      network: requestNetwork,
+      account: requestAccountAddress,
+      recipientAddress: requestRecipientAddress as `0x${string}`,
+      amount: requestAmount,
       asset: assetPayload,
     });
+
+    if (
+      requestId !== confirmationRequestId ||
+      activeNetwork.value.id !== requestNetwork.id ||
+      activeAccountId.value !== requestAccountId ||
+      primaryAddress.value !== requestAccountAddress ||
+      recipientAddress.value.trim() !== requestRecipientAddress ||
+      amount.value.trim() !== requestAmount ||
+      selectedAssetId.value !== requestSelectedAsset.id
+    ) {
+      return;
+    }
 
     confirmation.value = {
       ...nextConfirmation,
       gas: preview,
     };
   } catch (error) {
+    if (requestId !== confirmationRequestId) {
+      return;
+    }
+
     estimateFeedback.value = describeTransferError({
       error,
       stage: "estimate",
     });
   } finally {
-    isEstimating.value = false;
+    if (requestId === confirmationRequestId) {
+      isEstimating.value = false;
+    }
   }
 }
 
 async function signAndBroadcast() {
-  if (!confirmation.value) {
+  const nextConfirmation = confirmation.value;
+
+  if (!nextConfirmation) {
     transferFeedback.value = {
       stage: "sign",
       category: "unknown",
       title: "缺少确认摘要",
       message: "当前还没有可签名的确认摘要，请先完成一次估算。",
       hints: ["点击“生成确认摘要”后再继续签名"],
+    };
+    return;
+  }
+
+  if (
+    activeAccountId.value !== nextConfirmation.accountId ||
+    !primaryAddress.value ||
+    primaryAddress.value.toLowerCase() !== nextConfirmation.accountAddress.toLowerCase() ||
+    activeNetwork.value.id !== nextConfirmation.networkId
+  ) {
+    transferFeedback.value = {
+      stage: "sign",
+      category: "signing",
+      title: "确认摘要已过期",
+      message: "当前账号或网络已经变化，请重新生成确认摘要后再继续签名。",
+      hints: ["确认当前账号与网络后，重新点击“生成确认摘要”"],
     };
     return;
   }
@@ -835,25 +942,25 @@ async function signAndBroadcast() {
 
     try {
       signedPayload = await signTransferTransaction({
-        accountId: activeAccountId.value,
+        accountId: nextConfirmation.accountId,
         password: walletPassword.value,
-        chainId: String(activeNetwork.value.chainId),
-        nonce: confirmation.value.gas.nonce,
-        gasLimit: confirmation.value.gas.gasLimit,
-        recipientAddress: confirmation.value.recipientAddress as `0x${string}`,
-        amount: confirmation.value.gas.parsedAmount,
-        feeMode: confirmation.value.gas.feeMode,
-        gasPriceWei: confirmation.value.gas.gasPriceWei,
-        maxFeePerGasWei: confirmation.value.gas.maxFeePerGasWei,
-        maxPriorityFeePerGasWei: confirmation.value.gas.maxPriorityFeePerGasWei,
+        chainId: String(nextConfirmation.chainId),
+        nonce: nextConfirmation.gas.nonce,
+        gasLimit: nextConfirmation.gas.gasLimit,
+        recipientAddress: nextConfirmation.recipientAddress as `0x${string}`,
+        amount: nextConfirmation.gas.parsedAmount,
+        feeMode: nextConfirmation.gas.feeMode,
+        gasPriceWei: nextConfirmation.gas.gasPriceWei,
+        maxFeePerGasWei: nextConfirmation.gas.maxFeePerGasWei,
+        maxPriorityFeePerGasWei: nextConfirmation.gas.maxPriorityFeePerGasWei,
         asset:
-          confirmation.value.assetType === "native"
+          nextConfirmation.assetType === "native"
             ? {
                 type: "native",
               }
             : {
                 type: "erc20",
-                contractAddress: confirmation.value.contractAddress as `0x${string}`,
+                contractAddress: nextConfirmation.contractAddress as `0x${string}`,
               },
       });
     } catch (error) {
@@ -883,23 +990,23 @@ async function signAndBroadcast() {
 
     walletStore.prependActivity({
       id: txHash,
-      title: `${confirmation.value.assetSymbol} 转账已提交`,
-      subtitle: `${activeNetwork.value.name} · ${confirmation.value.amount} ${confirmation.value.assetSymbol} -> ${shortenAddress(confirmation.value.recipientAddress)}`,
+      title: `${nextConfirmation.assetSymbol} 转账已提交`,
+      subtitle: `${nextConfirmation.networkName} · ${nextConfirmation.amount} ${nextConfirmation.assetSymbol} -> ${shortenAddress(nextConfirmation.recipientAddress)}`,
       status: "pending",
-      accountId: activeAccountId.value,
-      accountAddress: primaryAddress.value || undefined,
+      accountId: nextConfirmation.accountId,
+      accountAddress: nextConfirmation.accountAddress,
       txHash,
-      networkId: activeNetwork.value.id,
-      assetId: confirmation.value.assetType === "native" ? "native" : selectedAssetId.value,
-      assetType: confirmation.value.assetType,
-      assetSymbol: confirmation.value.assetSymbol,
-      amount: confirmation.value.amount,
-      recipientAddress: confirmation.value.recipientAddress as `0x${string}`,
+      networkId: nextConfirmation.networkId,
+      assetId: nextConfirmation.assetId,
+      assetType: nextConfirmation.assetType,
+      assetSymbol: nextConfirmation.assetSymbol,
+      amount: nextConfirmation.amount,
+      recipientAddress: nextConfirmation.recipientAddress as `0x${string}`,
       createdAt: new Date().toISOString(),
     });
     walletStore.markAddressBookEntryUsed({
-      networkId: activeNetwork.value.id,
-      address: confirmation.value.recipientAddress,
+      networkId: nextConfirmation.networkId,
+      address: nextConfirmation.recipientAddress,
     });
 
     walletPassword.value = "";
@@ -910,7 +1017,7 @@ async function signAndBroadcast() {
         txHash,
       },
       query: {
-        networkId: activeNetwork.value.id,
+        networkId: nextConfirmation.networkId,
       },
     });
   } finally {
@@ -1187,7 +1294,7 @@ async function signAndBroadcast() {
             Priority Fee：{{ confirmation.gas.maxPriorityFeePerGasGwei }} gwei
           </li>
           <li v-if="confirmation.gas.estimatedNetworkFee">
-            预计网络费：{{ confirmation.gas.estimatedNetworkFee }} {{ activeNetwork.symbol }}
+            预计网络费：{{ confirmation.gas.estimatedNetworkFee }} {{ confirmation.networkSymbol }}
           </li>
         </ul>
         <label class="field">

@@ -23,10 +23,12 @@ const formErrors = ref<string[]>([]);
 const metadataLookupError = ref("");
 const metadataLookupMessage = ref("");
 const isReadingMetadata = ref(false);
+let metadataLookupRequestId = 0;
 
 const canReadMetadata = computed(() => isAddress(contractAddress.value.trim()));
 
 watch([contractAddress, activeNetwork], () => {
+  metadataLookupRequestId += 1;
   metadataLookupError.value = "";
   metadataLookupMessage.value = "";
 });
@@ -44,23 +46,44 @@ async function readMetadataFromContract() {
   }
 
   isReadingMetadata.value = true;
+  const requestId = ++metadataLookupRequestId;
+  const requestNetwork = activeNetwork.value;
+  const requestAddress = normalizedAddress;
 
   try {
     const metadata = await readErc20TokenMetadata({
-      network: activeNetwork.value,
+      network: requestNetwork,
       contractAddress: normalizedAddress,
-      trackedTokens: walletStore.tokensForNetwork(activeNetwork.value.id),
+      trackedTokens: walletStore.tokensForNetwork(requestNetwork.id),
     });
+
+    if (
+      requestId !== metadataLookupRequestId ||
+      activeNetwork.value.id !== requestNetwork.id ||
+      contractAddress.value.trim().toLowerCase() !== requestAddress.toLowerCase()
+    ) {
+      return;
+    }
 
     name.value = metadata.name;
     symbol.value = metadata.symbol;
     decimals.value = String(metadata.decimals);
     metadataLookupMessage.value = "已从当前网络的合约读取 Token 元数据，你仍然可以手动修改。";
   } catch (error) {
+    if (
+      requestId !== metadataLookupRequestId ||
+      activeNetwork.value.id !== requestNetwork.id ||
+      contractAddress.value.trim().toLowerCase() !== requestAddress.toLowerCase()
+    ) {
+      return;
+    }
+
     metadataLookupError.value =
       error instanceof Error ? error.message : "当前无法从合约读取 ERC20 元数据";
   } finally {
-    isReadingMetadata.value = false;
+    if (requestId === metadataLookupRequestId) {
+      isReadingMetadata.value = false;
+    }
   }
 }
 

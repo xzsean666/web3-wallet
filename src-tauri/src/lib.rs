@@ -19,7 +19,7 @@ fn get_app_overview() -> AppOverview {
         app_name: "Web3 Wallet",
         app_version: env!("CARGO_PKG_VERSION"),
         runtime: "Tauri 2 + Vue 3 + TypeScript",
-        security_policy: "Sensitive keys stay in Rust/Tauri Core only",
+        security_policy: "Sensitive keys stay in Rust/Tauri Core; backup phrase access is scoped to the active onboarding session",
         storage_strategy:
             "Stronghold for secrets, SQLite/WebView local storage for non-sensitive state",
     }

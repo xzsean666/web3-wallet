@@ -24,10 +24,19 @@ onMounted(async () => {
     return;
   }
 
+  if (!onboardingStore.backupAccessToken) {
+    await cancelPendingWallet();
+    onboardingStore.clearDraft();
+    await router.replace(backTarget.value);
+    return;
+  }
+
   try {
-    const phrase = await getPendingBackupPhrase();
+    const phrase = await getPendingBackupPhrase(onboardingStore.backupAccessToken);
     words.value = phrase.trim().split(/\s+/);
   } catch {
+    await cancelPendingWallet();
+    onboardingStore.clearDraft();
     await router.replace("/welcome");
   }
 });
@@ -39,7 +48,14 @@ async function finalizeBackup() {
   }
 
   try {
-    const profile = await finalizePendingWallet();
+    if (!onboardingStore.backupAccessToken) {
+      throw new Error("当前备份会话已过期，请重新创建钱包");
+    }
+
+    const profile = await finalizePendingWallet({
+      backupAccessToken: onboardingStore.backupAccessToken,
+      confirmedBackup: confirmed.value,
+    });
     onboardingStore.clearDraft();
     sessionStore.applyWalletProfile(profile, { unlocked: true });
     await router.replace("/wallet");

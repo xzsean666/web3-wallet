@@ -172,9 +172,57 @@ describe("session store", () => {
     unlockWalletMock.mockResolvedValueOnce(profile);
 
     expect(await store.unlockWallet("wrong-secret")).toBe(false);
+    expect(store.lastUnlockError).toBe("密码不正确，请重新输入");
     expect(await store.unlockWallet("super-secret")).toBe(true);
     expect(store.isUnlocked).toBe(true);
+    expect(store.lastUnlockError).toBe("");
     expect(store.walletLabel).toBe("Imported Ops");
+  });
+
+  it("keeps frontend and bridge state aligned when account switching returns null", async () => {
+    const store = useSessionStore();
+    const now = new Date().toISOString();
+
+    store.applyWalletSession(
+      {
+        activeAccountId: "account-1",
+        accounts: [
+          {
+            accountId: "account-1",
+            derivationGroupId: "account-1",
+            derivationIndex: 0,
+            walletLabel: "Primary Wallet",
+            address: "0x1111111111111111111111111111111111111111" as const,
+            isBiometricEnabled: true,
+            source: "created" as const,
+            secretKind: "mnemonic" as const,
+            hasBackedUpMnemonic: true,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+          {
+            accountId: "account-2",
+            derivationGroupId: "account-2",
+            derivationIndex: 0,
+            walletLabel: "Imported Ops",
+            address: "0x2222222222222222222222222222222222222222" as const,
+            isBiometricEnabled: false,
+            source: "imported" as const,
+            secretKind: "privateKey" as const,
+            hasBackedUpMnemonic: false,
+            createdAt: now,
+            lastUnlockedAt: null,
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+
+    setActiveWalletMock.mockResolvedValueOnce(null);
+
+    expect(await store.selectWalletAccount("account-2", { lock: true })).toBe(false);
+    expect(store.activeAccountId).toBe("account-1");
+    expect(store.walletLabel).toBe("Primary Wallet");
   });
 
   it("renames the selected wallet account and keeps the session unlocked", async () => {
@@ -280,10 +328,11 @@ describe("session store", () => {
       ],
     });
 
-    expect(await store.deleteWalletAccount("account-1")).toEqual({
+    expect(await store.deleteWalletAccount("account-1", "wallet-secret")).toEqual({
       ok: true,
       removedAll: false,
       requiresUnlock: true,
+      errorMessage: "",
     });
     expect(store.activeAccountId).toBe("account-2");
     expect(store.isUnlocked).toBe(false);

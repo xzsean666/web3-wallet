@@ -15,6 +15,11 @@ export interface PendingWalletDraft {
   createdAt: string;
 }
 
+export interface PendingWalletSession {
+  draft: PendingWalletDraft;
+  backupAccessToken: string;
+}
+
 export interface WalletProfile {
   accountId: string;
   derivationGroupId: string;
@@ -32,6 +37,15 @@ export interface WalletProfile {
 export interface WalletSessionSnapshot {
   accounts: WalletProfile[];
   activeAccountId: string | null;
+}
+
+export interface GetPendingBackupPhraseRequest {
+  backupAccessToken: string;
+}
+
+export interface FinalizePendingWalletRequest {
+  backupAccessToken: string;
+  confirmedBackup: boolean;
 }
 
 export interface TrackedToken {
@@ -86,6 +100,11 @@ export interface ActivityItem {
   amount?: string;
   recipientAddress?: WalletAddress;
   createdAt?: string;
+}
+
+export interface DeleteWalletAccountRequest {
+  accountId: string;
+  password: string;
 }
 
 export type TransferAsset =

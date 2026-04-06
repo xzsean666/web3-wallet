@@ -2,6 +2,7 @@ import type { FeeMode, WalletAddress, WalletHex } from "./wallet";
 
 export interface PortfolioSnapshot {
   networkId: string;
+  accountAddress: WalletAddress | null;
   nativeBalance: string;
   latestBlock: string | null;
   tokenBalances: Record<string, string>;

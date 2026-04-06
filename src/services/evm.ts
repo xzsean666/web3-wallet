@@ -696,6 +696,7 @@ export async function fetchPortfolioSnapshot(options: {
 
   return {
     networkId: options.network.id,
+    accountAddress: options.address,
     nativeBalance: formatEther(nativeBalance),
     latestBlock: blockNumber.toString(),
     tokenBalances: Object.fromEntries(tokenEntries),

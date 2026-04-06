@@ -1,7 +1,8 @@
 import { computed, ref, watch } from "vue";
-import { defineStore } from "pinia";
+import { defineStore, storeToRefs } from "pinia";
 import { isAddress } from "viem";
-import { loadPersistedUiState, patchPersistedUiState } from "../services/uiState";
+import { loadWalletScopedUiState, patchWalletScopedUiState } from "../services/uiState";
+import { useSessionStore } from "./session";
 import { formatTokenAmount, shortenAddress } from "../utils/format";
 import type {
   ActivityItem,
@@ -14,33 +15,63 @@ import type {
 
 const defaultTrackedTokens: TrackedToken[] = [
   {
-    id: "usdc",
+    id: "usdc-ethereum",
     symbol: "USDC",
     name: "USD Coin",
     balance: "0.00",
     decimals: 6,
     contractAddress: "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
-    networkIds: ["ethereum", "base", "optimism", "arbitrum"],
-    source: "preset",
-  },
-  {
-    id: "usdt",
-    symbol: "USDT",
-    name: "Tether",
-    balance: "0.00",
-    decimals: 6,
-    contractAddress: "0xdac17f958d2ee523a2206206994597c13d831ec7",
     networkIds: ["ethereum"],
     source: "preset",
   },
   {
-    id: "dai",
+    id: "usdc-base",
+    symbol: "USDC",
+    name: "USD Coin",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    networkIds: ["base"],
+    source: "preset",
+  },
+  {
+    id: "usdc-optimism",
+    symbol: "USDC",
+    name: "USD Coin",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+    networkIds: ["optimism"],
+    source: "preset",
+  },
+  {
+    id: "usdc-arbitrum",
+    symbol: "USDC",
+    name: "USD Coin",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    networkIds: ["arbitrum"],
+    source: "preset",
+  },
+  {
+    id: "usdt-ethereum",
+    symbol: "USDT",
+    name: "Tether",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+    networkIds: ["ethereum"],
+    source: "preset",
+  },
+  {
+    id: "dai-ethereum",
     symbol: "DAI",
     name: "Dai",
     balance: "0.00",
     decimals: 18,
-    contractAddress: "0x6b175474e89094c44da98b954eedeac495271d0f",
-    networkIds: ["ethereum", "arbitrum"],
+    contractAddress: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+    networkIds: ["ethereum"],
     source: "preset",
   },
 ];
@@ -158,15 +189,26 @@ function getAddressBookSortValue(entry: AddressBookEntry) {
 }
 
 export const useWalletStore = defineStore("wallet", () => {
-  const persistedState = loadPersistedUiState();
-  const trackedTokens = ref<TrackedToken[]>([
-    ...hydrateCustomTrackedTokens(persistedState.customTokens),
-    ...defaultTrackedTokens,
-  ]);
-  const recentActivity = ref<ActivityItem[]>(
-    hydrateRecentActivity(persistedState.recentActivity),
-  );
-  const addressBook = ref<AddressBookEntry[]>(hydrateAddressBook(persistedState.addressBook));
+  const sessionStore = useSessionStore();
+  const { activeAccountId } = storeToRefs(sessionStore);
+  const persistedScopeAccountId = ref<string | null>(activeAccountId.value);
+  const trackedTokens = ref<TrackedToken[]>([...defaultTrackedTokens]);
+  const recentActivity = ref<ActivityItem[]>(defaultActivity);
+  const addressBook = ref<AddressBookEntry[]>([]);
+
+  function applyWalletScopedState(accountId: string | null) {
+    const persistedState = loadWalletScopedUiState(accountId);
+
+    persistedScopeAccountId.value = accountId;
+    trackedTokens.value = [
+      ...hydrateCustomTrackedTokens(persistedState.customTokens),
+      ...defaultTrackedTokens,
+    ];
+    recentActivity.value = hydrateRecentActivity(persistedState.recentActivity);
+    addressBook.value = hydrateAddressBook(persistedState.addressBook);
+  }
+
+  applyWalletScopedState(activeAccountId.value);
 
   const trackedTokenCount = computed(() => trackedTokens.value.length);
   const addressBookCount = computed(() => addressBook.value.length);
@@ -526,7 +568,7 @@ export const useWalletStore = defineStore("wallet", () => {
   watch(
     trackedTokens,
     (nextTrackedTokens) => {
-      patchPersistedUiState({
+      patchWalletScopedUiState(persistedScopeAccountId.value, {
         customTokens: nextTrackedTokens.filter((token) => token.source === "custom"),
       });
     },
@@ -538,7 +580,7 @@ export const useWalletStore = defineStore("wallet", () => {
   watch(
     recentActivity,
     (nextRecentActivity) => {
-      patchPersistedUiState({
+      patchWalletScopedUiState(persistedScopeAccountId.value, {
         recentActivity: nextRecentActivity.filter((item) => item.id !== "empty-state"),
       });
     },
@@ -550,7 +592,7 @@ export const useWalletStore = defineStore("wallet", () => {
   watch(
     addressBook,
     (nextAddressBook) => {
-      patchPersistedUiState({
+      patchWalletScopedUiState(persistedScopeAccountId.value, {
         addressBook: nextAddressBook,
       });
     },
@@ -558,6 +600,10 @@ export const useWalletStore = defineStore("wallet", () => {
       deep: true,
     },
   );
+
+  watch(activeAccountId, (nextAccountId) => {
+    applyWalletScopedState(nextAccountId);
+  });
 
   return {
     addCustomToken,

@@ -2,7 +2,11 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { english, generateMnemonic, mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
 import { hashSecret } from "../utils/security";
 import type {
+  DeleteWalletAccountRequest,
+  FinalizePendingWalletRequest,
+  GetPendingBackupPhraseRequest,
   PendingWalletDraft,
+  PendingWalletSession,
   SecretKind,
   SignedTransferPayload,
   SignTransferRequest,
@@ -31,10 +35,6 @@ interface RenameWalletAccountRequest {
   walletLabel: string;
 }
 
-interface DeleteWalletAccountRequest {
-  accountId: string;
-}
-
 interface UnlockWalletRequest {
   accountId: string;
   password: string;
@@ -54,6 +54,8 @@ interface PreviewPendingState {
   draft: PendingWalletDraft;
   mnemonic: string;
   passwordHash: string;
+  backupAccessToken: string;
+  hasRevealedBackupPhrase: boolean;
 }
 
 interface PreviewState {
@@ -78,12 +80,13 @@ export function isTauriWalletRuntime() {
 
 export async function createWallet(request: CreateWalletRequest) {
   if (isTauriWalletRuntime()) {
-    return invoke<PendingWalletDraft>("create_wallet", { request });
+    return invoke<PendingWalletSession>("create_wallet", { request });
   }
 
   const mnemonic = generateMnemonic(english);
   const account = mnemonicToAccount(mnemonic);
   const passwordHash = await hashSecret(request.password);
+  const backupAccessToken = generateBackupAccessToken();
   const draft: PendingWalletDraft = {
     accountId: buildAccountId(account.address),
     derivationIndex: 0,
@@ -99,9 +102,14 @@ export async function createWallet(request: CreateWalletRequest) {
     draft,
     mnemonic,
     passwordHash,
+    backupAccessToken,
+    hasRevealedBackupPhrase: false,
   };
 
-  return draft;
+  return {
+    draft,
+    backupAccessToken,
+  };
 }
 
 export async function loadPendingWalletDraft() {
@@ -112,15 +120,20 @@ export async function loadPendingWalletDraft() {
   return previewState.pending?.draft ?? null;
 }
 
-export async function getPendingBackupPhrase() {
+export async function getPendingBackupPhrase(backupAccessToken: string) {
   if (isTauriWalletRuntime()) {
-    return invoke<string>("get_pending_backup_phrase");
+    const request: GetPendingBackupPhraseRequest = {
+      backupAccessToken,
+    };
+
+    return invoke<string>("get_pending_backup_phrase", { request });
   }
 
-  if (!previewState.pending) {
+  if (!previewState.pending || previewState.pending.backupAccessToken !== backupAccessToken) {
     throw new Error("当前没有待确认的创建流程");
   }
 
+  previewState.pending.hasRevealedBackupPhrase = true;
   return previewState.pending.mnemonic;
 }
 
@@ -133,13 +146,25 @@ export async function cancelPendingWallet() {
   previewState.pending = null;
 }
 
-export async function finalizePendingWallet() {
+export async function finalizePendingWallet(request: FinalizePendingWalletRequest) {
   if (isTauriWalletRuntime()) {
-    return invoke<WalletProfile>("finalize_pending_wallet");
+    return invoke<WalletProfile>("finalize_pending_wallet", { request });
   }
 
   if (!previewState.pending) {
     throw new Error("当前没有待确认的创建流程");
+  }
+
+  if (previewState.pending.backupAccessToken !== request.backupAccessToken) {
+    throw new Error("当前备份会话已失效，请重新创建钱包");
+  }
+
+  if (!previewState.pending.hasRevealedBackupPhrase) {
+    throw new Error("请先查看助记词，再完成备份确认");
+  }
+
+  if (!request.confirmedBackup) {
+    throw new Error("你必须确认已经离线备份助记词");
   }
 
   const nextWallet: WalletProfile = {
@@ -364,9 +389,16 @@ export async function deleteWalletAccount(request: DeleteWalletAccountRequest) {
   }
 
   const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
+  const storedHash = previewState.passwordHashes[request.accountId];
 
-  if (!account) {
+  if (!account || !storedHash) {
     throw new Error("当前找不到要操作的账号");
+  }
+
+  const nextHash = await hashSecret(request.password);
+
+  if (nextHash !== storedHash) {
+    throw new Error("钱包密码不正确，无法删除当前账号");
   }
 
   previewState.accounts = previewState.accounts.filter((entry) => entry.accountId !== request.accountId);
@@ -450,4 +482,18 @@ function createPreviewSessionSnapshot(): WalletSessionSnapshot {
     accounts: [...previewState.accounts],
     activeAccountId,
   };
+}
+
+function generateBackupAccessToken() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    const randomBytes = new Uint8Array(16);
+    crypto.getRandomValues(randomBytes);
+    return Array.from(randomBytes, (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  return `${Date.now().toString(16)}-${Math.random().toString(16).slice(2)}`;
 }

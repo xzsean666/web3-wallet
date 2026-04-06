@@ -1,5 +1,6 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
+import { clearAllWalletScopedUiState, clearWalletScopedUiState } from "../services/uiState";
 import {
   deleteWalletAccount as deleteWalletAccountBridge,
   isTauriWalletRuntime,
@@ -22,6 +23,7 @@ type DeleteWalletAccountResult = {
   ok: boolean;
   removedAll: boolean;
   requiresUnlock: boolean;
+  errorMessage: string;
 };
 
 export const useSessionStore = defineStore("session", () => {
@@ -29,6 +31,7 @@ export const useSessionStore = defineStore("session", () => {
   const activeAccountId = ref<string | null>(null);
   const isUnlocked = ref(false);
   const lastVisitedRoute = ref("/wallet");
+  const lastUnlockError = ref("");
   const shellMode = ref<ShellMode>("browser-preview");
 
   const hasWallet = computed(() => walletProfiles.value.length > 0);
@@ -73,6 +76,7 @@ export const useSessionStore = defineStore("session", () => {
 
     if (!snapshot || snapshot.accounts.length === 0) {
       resetSession();
+      clearAllWalletScopedUiState();
       shellMode.value = isTauriWalletRuntime() ? "tauri" : "browser-preview";
       return;
     }
@@ -89,6 +93,7 @@ export const useSessionStore = defineStore("session", () => {
     walletProfiles.value = [...snapshot.accounts];
     activeAccountId.value = snapshot.activeAccountId ?? snapshot.accounts[0]?.accountId ?? null;
     isUnlocked.value = options.unlocked;
+    lastUnlockError.value = "";
   }
 
   function upsertWalletProfile(
@@ -127,29 +132,36 @@ export const useSessionStore = defineStore("session", () => {
     walletProfiles.value = [];
     activeAccountId.value = null;
     isUnlocked.value = false;
+    lastUnlockError.value = "";
   }
 
   async function unlockWallet(password: string) {
     if (!activeAccountId.value) {
+      lastUnlockError.value = "当前没有可解锁的账号";
       return false;
     }
 
     let profile: WalletProfile | null = null;
+    lastUnlockError.value = "";
 
     try {
       profile = await unlockWalletBridge({
         accountId: activeAccountId.value,
         password,
       });
-    } catch {
+    } catch (error) {
+      lastUnlockError.value =
+        error instanceof Error ? error.message : "当前无法解锁钱包，请稍后重试。";
       return false;
     }
 
     if (!profile) {
+      lastUnlockError.value = "密码不正确，请重新输入";
       return false;
     }
 
     applyWalletProfile(profile, { unlocked: true });
+    lastUnlockError.value = "";
     return true;
   }
 
@@ -159,6 +171,7 @@ export const useSessionStore = defineStore("session", () => {
     }
 
     isUnlocked.value = false;
+    lastUnlockError.value = "";
   }
 
   async function selectWalletAccount(
@@ -183,18 +196,16 @@ export const useSessionStore = defineStore("session", () => {
       return false;
     }
 
-    activeAccountId.value = accountId;
-
-    if (profile) {
-      upsertWalletProfile(profile, {
-        unlocked: options.lock ? false : isUnlocked.value,
-        makeActive: true,
-      });
-    } else {
-      if (options.lock) {
-        isUnlocked.value = false;
-      }
+    if (!profile) {
+      return false;
     }
+
+    activeAccountId.value = accountId;
+    upsertWalletProfile(profile, {
+      unlocked: options.lock ? false : isUnlocked.value,
+      makeActive: true,
+    });
+    lastUnlockError.value = "";
 
     if (options.lock) {
       isUnlocked.value = false;
@@ -254,31 +265,40 @@ export const useSessionStore = defineStore("session", () => {
     return true;
   }
 
-  async function deleteWalletAccount(accountId: string): Promise<DeleteWalletAccountResult> {
+  async function deleteWalletAccount(
+    accountId: string,
+    password: string,
+  ): Promise<DeleteWalletAccountResult> {
     const deletedActive = activeAccountId.value === accountId;
     let snapshot: WalletSessionSnapshot | null = null;
 
     try {
       snapshot = await deleteWalletAccountBridge({
         accountId,
+        password,
       });
-    } catch {
+    } catch (error) {
       return {
         ok: false,
         removedAll: false,
         requiresUnlock: false,
+        errorMessage: error instanceof Error ? error.message : "当前无法删除这个账号，请稍后重试。",
       };
     }
 
     if (!snapshot || snapshot.accounts.length === 0) {
       resetSession();
+      clearWalletScopedUiState(accountId);
+      clearAllWalletScopedUiState();
       return {
         ok: true,
         removedAll: true,
         requiresUnlock: false,
+        errorMessage: "",
       };
     }
 
+    clearWalletScopedUiState(accountId);
     applyWalletSession(snapshot, {
       unlocked: deletedActive ? false : isUnlocked.value,
     });
@@ -287,6 +307,7 @@ export const useSessionStore = defineStore("session", () => {
       ok: true,
       removedAll: false,
       requiresUnlock: deletedActive,
+      errorMessage: "",
     };
   }
 
@@ -308,6 +329,7 @@ export const useSessionStore = defineStore("session", () => {
     hasWallet,
     isBiometricEnabled,
     isUnlocked,
+    lastUnlockError,
     lastUnlockedAt,
     lastVisitedRoute,
     lockWallet,

@@ -2,8 +2,16 @@ import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import type { PortfolioSnapshot } from "../types/portfolio";
 
-const emptySnapshot = (networkId: string): PortfolioSnapshot => ({
+function buildSnapshotKey(networkId: string, accountAddress: string | null | undefined) {
+  return `${networkId}:${accountAddress?.toLowerCase() ?? "__none__"}`;
+}
+
+const emptySnapshot = (
+  networkId: string,
+  accountAddress: string | null | undefined,
+): PortfolioSnapshot => ({
   networkId,
+  accountAddress: (accountAddress ?? null) as PortfolioSnapshot["accountAddress"],
   nativeBalance: "0",
   latestBlock: null,
   tokenBalances: {},
@@ -15,18 +23,25 @@ const emptySnapshot = (networkId: string): PortfolioSnapshot => ({
 export const usePortfolioStore = defineStore("portfolio", () => {
   const snapshots = ref<Record<string, PortfolioSnapshot>>({});
 
-  const networkIds = computed(() => Object.keys(snapshots.value));
+  const snapshotKeys = computed(() => Object.keys(snapshots.value));
 
-  function getSnapshot(networkId: string) {
-    return snapshots.value[networkId] ?? emptySnapshot(networkId);
+  function getSnapshot(networkId: string, accountAddress: string | null | undefined) {
+    return (
+      snapshots.value[buildSnapshotKey(networkId, accountAddress)] ??
+      emptySnapshot(networkId, accountAddress)
+    );
   }
 
-  function markLoading(networkId: string) {
-    const current = getSnapshot(networkId);
+  function markLoading(options: {
+    networkId: string;
+    accountAddress: string | null | undefined;
+  }) {
+    const snapshotKey = buildSnapshotKey(options.networkId, options.accountAddress);
+    const current = getSnapshot(options.networkId, options.accountAddress);
 
     snapshots.value = {
       ...snapshots.value,
-      [networkId]: {
+      [snapshotKey]: {
         ...current,
         status: "loading",
         error: "",
@@ -37,19 +52,24 @@ export const usePortfolioStore = defineStore("portfolio", () => {
   function setSnapshot(snapshot: PortfolioSnapshot) {
     snapshots.value = {
       ...snapshots.value,
-      [snapshot.networkId]: snapshot,
+      [buildSnapshotKey(snapshot.networkId, snapshot.accountAddress)]: snapshot,
     };
   }
 
-  function setError(networkId: string, error: string) {
-    const current = getSnapshot(networkId);
+  function setError(options: {
+    networkId: string;
+    accountAddress: string | null | undefined;
+    error: string;
+  }) {
+    const snapshotKey = buildSnapshotKey(options.networkId, options.accountAddress);
+    const current = getSnapshot(options.networkId, options.accountAddress);
 
     snapshots.value = {
       ...snapshots.value,
-      [networkId]: {
+      [snapshotKey]: {
         ...current,
         status: "error",
-        error,
+        error: options.error,
       },
     };
   }
@@ -57,10 +77,9 @@ export const usePortfolioStore = defineStore("portfolio", () => {
   return {
     getSnapshot,
     markLoading,
-    networkIds,
+    snapshotKeys,
     setError,
     setSnapshot,
     snapshots,
   };
 });
-

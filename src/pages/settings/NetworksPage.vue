@@ -23,6 +23,7 @@ const draft = ref<NetworkDraft>({
   symbol: "",
   explorerUrl: "",
 });
+let validationRequestId = 0;
 
 const draftKey = computed(() =>
   JSON.stringify({
@@ -107,6 +108,8 @@ async function runRpcValidation() {
 
   formErrors.value = [];
   isValidating.value = true;
+  const requestId = ++validationRequestId;
+  const requestDraftKey = draftKey.value;
 
   try {
     const result = await validateRpcEndpoint({
@@ -114,8 +117,15 @@ async function runRpcValidation() {
       rpcUrl: normalizedDraft.rpcUrl,
     });
 
+    if (requestId !== validationRequestId || requestDraftKey !== draftKey.value) {
+      validation.value = null;
+      validatedDraftKey.value = "";
+      formErrors.value = ["当前草稿在校验期间发生变化，请重新校验 RPC 参数。"];
+      return false;
+    }
+
     validation.value = result;
-    validatedDraftKey.value = draftKey.value;
+    validatedDraftKey.value = requestDraftKey;
 
     if (result.status !== "ok") {
       formErrors.value = [result.message];
@@ -124,7 +134,9 @@ async function runRpcValidation() {
 
     return true;
   } finally {
-    isValidating.value = false;
+    if (requestId === validationRequestId) {
+      isValidating.value = false;
+    }
   }
 }
 

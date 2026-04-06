@@ -29,10 +29,13 @@ const tokenId = computed(() => String(route.params.tokenId));
 const { activeNetwork } = storeToRefs(networksStore);
 const { accountCount, activeAccountId, primaryAddress } = storeToRefs(sessionStore);
 const { recentActivity } = storeToRefs(walletStore);
-const snapshot = computed(() => portfolioStore.getSnapshot(activeNetwork.value.id));
+const snapshot = computed(() =>
+  portfolioStore.getSnapshot(activeNetwork.value.id, primaryAddress.value || null),
+);
 const removeTokenFeedback = ref("");
 const isRemovingCustomToken = ref(false);
 const isRemoveConfirming = ref(false);
+let tokenContextRefreshRequestId = 0;
 
 const isNativeToken = computed(() => tokenId.value === "native");
 const trackedToken = computed(() =>
@@ -172,21 +175,38 @@ async function refreshTokenContext() {
     return;
   }
 
-  portfolioStore.markLoading(activeNetwork.value.id);
+  const requestId = ++tokenContextRefreshRequestId;
+  const requestNetwork = activeNetwork.value;
+  const requestAddress = primaryAddress.value;
+  const requestTokens = [...walletStore.tokensForNetwork(requestNetwork.id)];
+
+  portfolioStore.markLoading({
+    networkId: requestNetwork.id,
+    accountAddress: requestAddress,
+  });
 
   try {
     const nextSnapshot = await fetchPortfolioSnapshot({
-      network: activeNetwork.value,
-      address: primaryAddress.value,
-      tokens: walletStore.tokensForNetwork(activeNetwork.value.id),
+      network: requestNetwork,
+      address: requestAddress,
+      tokens: requestTokens,
     });
+
+    if (requestId !== tokenContextRefreshRequestId) {
+      return;
+    }
 
     portfolioStore.setSnapshot(nextSnapshot);
   } catch (error) {
-    portfolioStore.setError(
-      activeNetwork.value.id,
-      error instanceof Error ? error.message : "Failed to load token detail",
-    );
+    if (requestId !== tokenContextRefreshRequestId) {
+      return;
+    }
+
+    portfolioStore.setError({
+      networkId: requestNetwork.id,
+      accountAddress: requestAddress,
+      error: error instanceof Error ? error.message : "Failed to load token detail",
+    });
   }
 }
 

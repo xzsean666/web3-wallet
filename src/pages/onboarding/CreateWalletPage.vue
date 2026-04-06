@@ -43,13 +43,13 @@ async function submitCreateWallet() {
   isSubmitting.value = true;
 
   try {
-    const draft = await createWallet({
+    const pendingSession = await createWallet({
       walletLabel: walletLabel.value.trim(),
       password: password.value,
       isBiometricEnabled: enableBiometric.value,
     });
 
-    onboardingStore.stageDraft(draft);
+    onboardingStore.stageDraft(pendingSession);
 
     await router.push("/onboarding/backup");
   } catch (error) {

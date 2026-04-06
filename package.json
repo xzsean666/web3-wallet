@@ -11,6 +11,7 @@
     "tauri": "tauri",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
     "@tauri-apps/cli": "^2.10.1",
     "@types/qrcode": "^1.5.6",
     "@vitejs/plugin-vue": "^6.0.5",
+    "@vitest/coverage-v8": "^4.1.2",
     "@vue/test-utils": "^2.4.6",
     "jsdom": "^29.0.1",
     "typescript": "^6.0.2",

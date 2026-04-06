@@ -38,11 +38,14 @@ type WalletCommandResult<T> = Result<T, String>;
 
 #[derive(Default)]
 pub struct WalletRuntimeState {
+    mutation_lock: Mutex<()>,
     pending_onboarding: Mutex<Option<PendingOnboarding>>,
 }
 
 struct PendingOnboarding {
+    backup_access_token: String,
     draft: PendingWalletDraft,
+    has_revealed_backup_phrase: bool,
     password: Zeroizing<String>,
     mnemonic: Zeroizing<String>,
 }
@@ -171,6 +174,13 @@ impl From<StoredWalletMetadata> for WalletProfile {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PendingWalletSession {
+    draft: PendingWalletDraft,
+    backup_access_token: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WalletSessionSnapshot {
     accounts: Vec<WalletProfile>,
     active_account_id: Option<String>,
@@ -210,6 +220,19 @@ pub struct UnlockWalletRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GetPendingBackupPhraseRequest {
+    backup_access_token: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FinalizePendingWalletRequest {
+    backup_access_token: String,
+    confirmed_backup: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SetActiveWalletRequest {
     account_id: String,
 }
@@ -233,6 +256,7 @@ pub struct RenameWalletAccountRequest {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteWalletAccountRequest {
     account_id: String,
+    password: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -281,6 +305,12 @@ enum WalletError {
     PasswordTooShort,
     #[error("当前没有待确认的创建流程")]
     NoPendingWallet,
+    #[error("当前备份会话已失效，请重新创建钱包")]
+    InvalidPendingBackupAccess,
+    #[error("请先查看助记词，再完成备份确认")]
+    BackupPhraseRevealRequired,
+    #[error("你必须确认已经离线备份助记词")]
+    BackupConfirmationRequired,
     #[error("待确认钱包数据异常")]
     InvalidPendingWallet,
     #[error("导入内容不能为空")]
@@ -297,6 +327,8 @@ enum WalletError {
     KeyDerivationFailed,
     #[error("无法访问本地钱包目录")]
     PathUnavailable,
+    #[error("本地钱包盐文件缺失，现有钱包无法继续解锁；请恢复原始 salt.txt 后再试")]
+    StrongholdSaltMissing,
     #[error("本地文件读写失败: {0}")]
     Io(#[from] std::io::Error),
     #[error("Stronghold 操作失败: {0}")]
@@ -332,7 +364,7 @@ pub fn create_wallet(
     app: AppHandle,
     state: State<'_, WalletRuntimeState>,
     request: CreateWalletRequest,
-) -> WalletCommandResult<PendingWalletDraft> {
+) -> WalletCommandResult<PendingWalletSession> {
     let request = normalize_create_request(request)?;
 
     let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
@@ -353,8 +385,11 @@ pub fn create_wallet(
         created_at: now_rfc3339(),
     };
 
+    let backup_access_token = generate_pending_backup_access_token();
     let pending = PendingOnboarding {
+        backup_access_token: backup_access_token.clone(),
         draft: draft.clone(),
+        has_revealed_backup_phrase: false,
         password: Zeroizing::new(request.password),
         mnemonic: mnemonic_phrase,
     };
@@ -362,7 +397,10 @@ pub fn create_wallet(
     let mut guard = state.pending_onboarding.lock().unwrap();
     *guard = Some(pending);
 
-    Ok(draft)
+    Ok(PendingWalletSession {
+        draft,
+        backup_access_token,
+    })
 }
 
 #[tauri::command]
@@ -380,13 +418,20 @@ pub fn load_pending_wallet_draft(
 #[tauri::command]
 pub fn get_pending_backup_phrase(
     state: State<'_, WalletRuntimeState>,
+    request: GetPendingBackupPhraseRequest,
 ) -> WalletCommandResult<String> {
-    let guard = state.pending_onboarding.lock().unwrap();
-    let pending = guard.as_ref().ok_or(WalletError::NoPendingWallet)?;
+    let mut guard = state.pending_onboarding.lock().unwrap();
+    let pending = guard.as_mut().ok_or(WalletError::NoPendingWallet)?;
 
     if !matches!(pending.draft.secret_kind, SecretKind::Mnemonic) {
         return Err(WalletError::InvalidPendingWallet.to_string());
     }
+
+    if pending.backup_access_token != request.backup_access_token {
+        return Err(WalletError::InvalidPendingBackupAccess.to_string());
+    }
+
+    pending.has_revealed_backup_phrase = true;
 
     Ok(pending.mnemonic.to_string())
 }
@@ -402,11 +447,27 @@ pub fn cancel_pending_wallet(state: State<'_, WalletRuntimeState>) -> WalletComm
 pub fn finalize_pending_wallet(
     app: AppHandle,
     state: State<'_, WalletRuntimeState>,
+    request: FinalizePendingWalletRequest,
 ) -> WalletCommandResult<WalletProfile> {
     let pending = {
         let mut guard = state.pending_onboarding.lock().unwrap();
+        let pending = guard.as_ref().ok_or(WalletError::NoPendingWallet)?;
+
+        if pending.backup_access_token != request.backup_access_token {
+            return Err(WalletError::InvalidPendingBackupAccess.to_string());
+        }
+
+        if !pending.has_revealed_backup_phrase {
+            return Err(WalletError::BackupPhraseRevealRequired.to_string());
+        }
+
+        if !request.confirmed_backup {
+            return Err(WalletError::BackupConfirmationRequired.to_string());
+        }
+
         guard.take().ok_or(WalletError::NoPendingWallet)?
     };
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
 
     ensure_wallet_address_is_unique(&app, &pending.draft.address)?;
 
@@ -450,6 +511,7 @@ pub fn import_wallet(
     request: ImportWalletRequest,
 ) -> WalletCommandResult<WalletProfile> {
     let request = normalize_import_request(request)?;
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
 
     {
         let mut guard = state.pending_onboarding.lock().unwrap();
@@ -506,9 +568,11 @@ pub fn import_wallet(
 #[tauri::command]
 pub fn derive_mnemonic_account(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: DeriveMnemonicAccountRequest,
 ) -> WalletCommandResult<WalletProfile> {
     let request = normalize_derive_request(request)?;
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
     let source_metadata = load_wallet_metadata(&app, &request.source_account_id)?
         .ok_or(WalletError::WalletNotInitialized)?;
 
@@ -569,10 +633,13 @@ pub fn rename_wallet_account(
 #[tauri::command]
 pub fn delete_wallet_account(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: DeleteWalletAccountRequest,
 ) -> WalletCommandResult<WalletSessionSnapshot> {
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = load_wallet_metadata(&app, &request.account_id)?
         .ok_or(WalletError::WalletAccountNotFound)?;
+    load_secret_record(&app, &metadata, &request.password)?;
     let deleted_account_id = metadata.account_id.clone();
     let deleted_snapshot_path = metadata.snapshot_path.clone();
     let previous_active_account_id = load_active_account_id(&app)?;
@@ -645,12 +712,18 @@ pub fn unlock_wallet(
 
     let stronghold = match stronghold {
         Ok(stronghold) => stronghold,
-        Err(_) => return Ok(None),
+        Err(error) => {
+            if should_mask_unlock_error(&error) {
+                return Ok(None);
+            }
+
+            return Err(error.to_string());
+        }
     };
 
-    if stronghold.load_client(STRONGHOLD_CLIENT.to_vec()).is_err() {
-        return Ok(None);
-    }
+    stronghold
+        .load_client(STRONGHOLD_CLIENT.to_vec())
+        .map_err(|_| WalletError::MissingSigningSecret)?;
 
     let unlocked_at = now_rfc3339();
     update_last_unlocked_at(&app, &request.account_id, &unlocked_at)?;
@@ -1001,7 +1074,7 @@ fn load_secret_record(
     let paths = wallet_paths(app)?;
 
     let stronghold = open_stronghold(snapshot_path, password, &paths.salt_path)
-        .map_err(|_| WalletError::InvalidWalletPassword)?;
+        .map_err(normalize_secret_access_error)?;
     let client = stronghold
         .load_client(STRONGHOLD_CLIENT.to_vec())
         .map_err(|_| WalletError::MissingSigningSecret)?;
@@ -1028,6 +1101,23 @@ fn load_secret_record(
         secret_kind,
         Zeroizing::new(secret_record[delimiter + 1..].to_vec()),
     ))
+}
+
+fn normalize_secret_access_error(error: WalletError) -> WalletError {
+    match error {
+        WalletError::StrongholdSaltMissing
+        | WalletError::MetadataCorrupted(_)
+        | WalletError::PathUnavailable
+        | WalletError::Io(_) => error,
+        _ => WalletError::InvalidWalletPassword,
+    }
+}
+
+fn should_mask_unlock_error(error: &WalletError) -> bool {
+    matches!(
+        error,
+        WalletError::InvalidWalletPassword | WalletError::Stronghold(_)
+    )
 }
 
 fn build_transfer_transaction(
@@ -1222,6 +1312,10 @@ fn derive_stronghold_password_hash(
         }
         salt.copy_from_slice(&existing);
     } else {
+        if stronghold_storage_exists_without_salt(salt_path)? {
+            return Err(WalletError::StrongholdSaltMissing);
+        }
+
         let mut rng = thread_rng();
         rng.fill_bytes(&mut salt);
         fs::write(salt_path, salt)?;
@@ -1229,6 +1323,39 @@ fn derive_stronghold_password_hash(
 
     argon2::hash_raw(password.as_bytes(), &salt, &Default::default())
         .map_err(|error| WalletError::Stronghold(error.to_string()))
+}
+
+fn stronghold_storage_exists_without_salt(salt_path: &Path) -> Result<bool, WalletError> {
+    let Some(local_data_dir) = salt_path.parent() else {
+        return Ok(false);
+    };
+
+    let metadata_db_path = local_data_dir.join("wallet-meta.sqlite3");
+
+    if metadata_db_path.is_file() {
+        return Ok(true);
+    }
+
+    let entries = match fs::read_dir(local_data_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(WalletError::Io(error)),
+    };
+
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("stronghold"))
+        {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn wallet_paths(app: &AppHandle) -> Result<WalletPaths, WalletError> {
@@ -1651,6 +1778,13 @@ fn delete_snapshot_if_unused(
     Ok(())
 }
 
+fn generate_pending_backup_access_token() -> String {
+    let mut random_bytes = [0u8; 32];
+    let mut rng = thread_rng();
+    rng.fill_bytes(&mut random_bytes);
+    hex::encode(random_bytes)
+}
+
 fn build_account_id(address: &str) -> String {
     format!("account-{}", address.trim().to_lowercase())
 }
@@ -1688,4 +1822,51 @@ fn next_mnemonic_derivation_index(
 
 fn to_sql_conversion_error(error: WalletError) -> rusqlite::Error {
     rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_temp_dir(test_name: &str) -> PathBuf {
+        let mut path = std::env::temp_dir();
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        path.push(format!("web3-wallet-{test_name}-{timestamp}"));
+        path
+    }
+
+    #[test]
+    fn backup_access_tokens_are_hex_encoded() {
+        let token = generate_pending_backup_access_token();
+
+        assert_eq!(token.len(), 64);
+        assert!(token.chars().all(|character| character.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn refuses_to_regenerate_salt_when_wallet_storage_already_exists() {
+        let temp_dir = unique_temp_dir("salt-missing");
+        fs::create_dir_all(&temp_dir).unwrap();
+        fs::write(temp_dir.join("wallet-meta.sqlite3"), b"legacy-wallet").unwrap();
+
+        let result = derive_stronghold_password_hash("super-secret", &temp_dir.join("salt.txt"));
+
+        assert!(matches!(result, Err(WalletError::StrongholdSaltMissing)));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn preserves_structural_secret_access_errors() {
+        let error = normalize_secret_access_error(WalletError::StrongholdSaltMissing);
+        assert!(matches!(error, WalletError::StrongholdSaltMissing));
+
+        let normalized =
+            normalize_secret_access_error(WalletError::Stronghold("bad password".into()));
+        assert!(matches!(normalized, WalletError::InvalidWalletPassword));
+    }
 }

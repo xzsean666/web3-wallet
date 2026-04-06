@@ -26,6 +26,7 @@ const renameFeedback = ref("");
 const isRenaming = ref(false);
 const deleteTargetAccountId = ref<string | null>(null);
 const deleteConfirmLabel = ref("");
+const deletePassword = ref("");
 const deleteFeedback = ref("");
 const isDeleting = ref(false);
 type AccountEntry = (typeof walletProfiles.value)[number];
@@ -125,12 +126,14 @@ function openDeleteForm(account: AccountEntry) {
   cancelRenameForm();
   deleteTargetAccountId.value = account.accountId;
   deleteConfirmLabel.value = "";
+  deletePassword.value = "";
   deleteFeedback.value = "";
 }
 
 function cancelDeleteForm() {
   deleteTargetAccountId.value = null;
   deleteConfirmLabel.value = "";
+  deletePassword.value = "";
   deleteFeedback.value = "";
 }
 
@@ -198,13 +201,18 @@ async function submitDelete(account: AccountEntry) {
     return;
   }
 
+  if (!deletePassword.value.trim()) {
+    deleteFeedback.value = "请输入当前账号的钱包密码，才能删除这个账号。";
+    return;
+  }
+
   isDeleting.value = true;
 
   try {
-    const result = await sessionStore.deleteWalletAccount(account.accountId);
+    const result = await sessionStore.deleteWalletAccount(account.accountId, deletePassword.value);
 
     if (!result.ok) {
-      deleteFeedback.value = "当前无法删除这个账号，请稍后重试。";
+      deleteFeedback.value = result.errorMessage || "当前无法删除这个账号，请稍后重试。";
       return;
     }
 
@@ -439,6 +447,15 @@ async function submitDelete(account: AccountEntry) {
                       v-model="deleteConfirmLabel"
                       autocomplete="off"
                       placeholder="输入当前账号名称以确认"
+                    />
+                  </label>
+                  <label class="field">
+                    <span>账号密码</span>
+                    <input
+                      v-model="deletePassword"
+                      autocomplete="current-password"
+                      type="password"
+                      placeholder="输入当前账号的钱包密码"
                     />
                   </label>
                   <p v-if="deleteFeedback" class="helper-text helper-text--error">{{ deleteFeedback }}</p>

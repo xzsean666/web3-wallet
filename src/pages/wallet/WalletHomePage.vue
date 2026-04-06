@@ -34,7 +34,9 @@ const { recentActivity, trackedTokenCount, trackedTokens } = storeToRefs(walletS
 const tokensForActiveNetwork = computed(() =>
   trackedTokens.value.filter((token) => token.networkIds.includes(activeNetwork.value.id)),
 );
-const snapshot = computed(() => portfolioStore.getSnapshot(activeNetwork.value.id));
+const snapshot = computed(() =>
+  portfolioStore.getSnapshot(activeNetwork.value.id, primaryAddress.value || null),
+);
 const activityFilter = ref<ActivityFilter>("all");
 const assetFilter = ref<AssetFilter>("all");
 const assetQuery = ref("");
@@ -179,6 +181,7 @@ const confirmingRemovalTokenId = ref<string | null>(null);
 const removingTokenId = ref<string | null>(null);
 const assetActionFeedback = ref("");
 const assetActionFeedbackTone = ref<"success" | "error" | "neutral">("neutral");
+let portfolioRefreshRequestId = 0;
 
 function resolveActivityNetwork(item: ActivityItem) {
   if (item.networkId) {
@@ -317,21 +320,38 @@ async function refreshPortfolio() {
     return;
   }
 
-  portfolioStore.markLoading(activeNetwork.value.id);
+  const requestId = ++portfolioRefreshRequestId;
+  const requestNetwork = activeNetwork.value;
+  const requestAddress = primaryAddress.value;
+  const requestTokens = [...tokensForActiveNetwork.value];
+
+  portfolioStore.markLoading({
+    networkId: requestNetwork.id,
+    accountAddress: requestAddress,
+  });
 
   try {
     const nextSnapshot = await fetchPortfolioSnapshot({
-      network: activeNetwork.value,
-      address: primaryAddress.value,
-      tokens: tokensForActiveNetwork.value,
+      network: requestNetwork,
+      address: requestAddress,
+      tokens: requestTokens,
     });
+
+    if (requestId !== portfolioRefreshRequestId) {
+      return;
+    }
 
     portfolioStore.setSnapshot(nextSnapshot);
   } catch (error) {
-    portfolioStore.setError(
-      activeNetwork.value.id,
-      error instanceof Error ? error.message : "Failed to load portfolio snapshot",
-    );
+    if (requestId !== portfolioRefreshRequestId) {
+      return;
+    }
+
+    portfolioStore.setError({
+      networkId: requestNetwork.id,
+      accountAddress: requestAddress,
+      error: error instanceof Error ? error.message : "Failed to load portfolio snapshot",
+    });
   }
 }
 

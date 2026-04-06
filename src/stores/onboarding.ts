@@ -5,6 +5,7 @@ import type { PendingWalletDraft, SecretKind, WalletAddress, WalletSource } from
 
 export const useOnboardingStore = defineStore("onboarding", () => {
   const internalDraft = ref<PendingWalletDraft | null>(null);
+  const backupAccessToken = ref<string | null>(null);
 
   const hasPendingDraft = computed(() => internalDraft.value !== null);
   const hasPendingBackup = computed(
@@ -23,23 +24,34 @@ export const useOnboardingStore = defineStore("onboarding", () => {
     () => internalDraft.value?.source ?? null,
   );
 
-  function stageDraft(draft: PendingWalletDraft) {
+  function stageDraft(options: {
+    draft: PendingWalletDraft;
+    backupAccessToken: string;
+  }) {
+    backupAccessToken.value = options.backupAccessToken;
+    internalDraft.value = options.draft;
+  }
+
+  function setDraftFromBootstrap(draft: PendingWalletDraft | null) {
+    backupAccessToken.value = null;
     internalDraft.value = draft;
   }
 
   function clearDraft() {
+    backupAccessToken.value = null;
     internalDraft.value = null;
   }
 
   async function bootstrap() {
     try {
-      internalDraft.value = await loadPendingWalletDraft();
+      setDraftFromBootstrap(await loadPendingWalletDraft());
     } catch {
-      internalDraft.value = null;
+      setDraftFromBootstrap(null);
     }
   }
 
   return {
+    backupAccessToken,
     bootstrap,
     clearDraft,
     hasPendingBackup,
@@ -48,6 +60,7 @@ export const useOnboardingStore = defineStore("onboarding", () => {
     pendingLabel,
     pendingSecretKind,
     pendingSource,
+    setDraftFromBootstrap,
     stageDraft,
   };
 });

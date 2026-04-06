@@ -8,7 +8,7 @@ import { formatDateTime, shortenAddress } from "../../utils/format";
 
 const router = useRouter();
 const sessionStore = useSessionStore();
-const { activeAccountId, isBiometricEnabled, primaryAddress, statusLabel, walletLabel, walletProfiles } =
+const { activeAccountId, isBiometricEnabled, lastUnlockError, primaryAddress, statusLabel, walletLabel, walletProfiles } =
   storeToRefs(sessionStore);
 const password = ref("");
 const formError = ref("");
@@ -47,7 +47,7 @@ async function unlockWallet() {
     const didUnlock = await sessionStore.unlockWallet(password.value);
 
     if (!didUnlock) {
-      formError.value = "密码不正确，请重新输入";
+      formError.value = lastUnlockError.value || "当前无法解锁钱包，请稍后重试。";
       return;
     }
 

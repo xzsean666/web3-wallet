@@ -2,7 +2,36 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
 import { clearPersistedUiState } from "../../services/uiState";
+import { useSessionStore } from "../session";
 import { useWalletStore } from "../wallet";
+
+function bootstrapSession(accountId = "account-1", address = "0x1111111111111111111111111111111111111111") {
+  const sessionStore = useSessionStore();
+
+  sessionStore.applyWalletSession(
+    {
+      activeAccountId: accountId,
+      accounts: [
+        {
+          accountId,
+          derivationGroupId: accountId,
+          derivationIndex: 0,
+          walletLabel: "Primary Wallet",
+          address: address as `0x${string}`,
+          isBiometricEnabled: true,
+          source: "created" as const,
+          secretKind: "mnemonic" as const,
+          hasBackedUpMnemonic: true,
+          createdAt: "2026-04-06T00:00:00.000Z",
+          lastUnlockedAt: "2026-04-06T00:00:00.000Z",
+        },
+      ],
+    },
+    { unlocked: true },
+  );
+
+  return sessionStore;
+}
 
 describe("wallet store", () => {
   beforeEach(() => {
@@ -11,6 +40,7 @@ describe("wallet store", () => {
   });
 
   it("adds a valid custom token", () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     const result = store.addCustomToken({
@@ -26,6 +56,7 @@ describe("wallet store", () => {
   });
 
   it("rejects invalid token drafts", () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     const result = store.addCustomToken({
@@ -41,6 +72,7 @@ describe("wallet store", () => {
   });
 
   it("removes only custom tokens", () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     const added = store.addCustomToken({
@@ -56,7 +88,7 @@ describe("wallet store", () => {
       throw new Error("expected custom token to be added");
     }
 
-    const presetRemoval = store.removeCustomToken("usdc");
+    const presetRemoval = store.removeCustomToken("usdc-ethereum");
     expect(presetRemoval.ok).toBe(false);
     expect(presetRemoval.error).toBe("预置 Token 不能被移除");
 
@@ -66,6 +98,7 @@ describe("wallet store", () => {
   });
 
   it("syncs recent activity status from pending to final state", () => {
+    bootstrapSession();
     const store = useWalletStore();
     const txHash = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as const;
 
@@ -103,6 +136,7 @@ describe("wallet store", () => {
   });
 
   it("hydrates persisted custom tokens and recent activity", async () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     store.addCustomToken({
@@ -123,6 +157,7 @@ describe("wallet store", () => {
     await nextTick();
 
     setActivePinia(createPinia());
+    bootstrapSession();
     const rehydratedStore = useWalletStore();
 
     expect(rehydratedStore.trackedTokens.some((token) => token.symbol === "CD")).toBe(true);
@@ -134,6 +169,7 @@ describe("wallet store", () => {
   });
 
   it("upserts, marks, and removes address book entries", () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     const firstResult = store.upsertAddressBookEntry({
@@ -182,6 +218,7 @@ describe("wallet store", () => {
   });
 
   it("formats activity title and subtitle with address book labels", () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     store.upsertAddressBookEntry({
@@ -219,6 +256,7 @@ describe("wallet store", () => {
   });
 
   it("hydrates persisted address book entries", async () => {
+    bootstrapSession();
     const store = useWalletStore();
 
     store.upsertAddressBookEntry({
@@ -230,6 +268,7 @@ describe("wallet store", () => {
     await nextTick();
 
     setActivePinia(createPinia());
+    bootstrapSession();
     const rehydratedStore = useWalletStore();
 
     expect(rehydratedStore.contactsForNetwork("base")[0]).toMatchObject({
@@ -237,5 +276,43 @@ describe("wallet store", () => {
       address: "0x2222222222222222222222222222222222222222",
       note: "Monthly payouts",
     });
+  });
+
+  it("isolates wallet-scoped ui state by account id", async () => {
+    const sessionStore = bootstrapSession("account-1", "0x1111111111111111111111111111111111111111");
+    const store = useWalletStore();
+
+    store.upsertAddressBookEntry({
+      networkId: "ethereum",
+      label: "Treasury Ops",
+      address: "0x1111111111111111111111111111111111111111",
+      note: "Account one only",
+    });
+    await nextTick();
+
+    sessionStore.applyWalletSession(
+      {
+        activeAccountId: "account-2",
+        accounts: [
+          {
+            accountId: "account-2",
+            derivationGroupId: "account-2",
+            derivationIndex: 0,
+            walletLabel: "Secondary Wallet",
+            address: "0x2222222222222222222222222222222222222222" as const,
+            isBiometricEnabled: false,
+            source: "imported" as const,
+            secretKind: "privateKey" as const,
+            hasBackedUpMnemonic: false,
+            createdAt: "2026-04-06T00:00:00.000Z",
+            lastUnlockedAt: "2026-04-06T00:00:00.000Z",
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+    await nextTick();
+
+    expect(store.contactsForNetwork("ethereum")).toHaveLength(0);
   });
 });
