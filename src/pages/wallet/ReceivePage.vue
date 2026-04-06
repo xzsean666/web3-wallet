@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref } from "vue";
 import { storeToRefs } from "pinia";
 import { RouterLink } from "vue-router";
+import ReceiveQrCard from "../../components/ReceiveQrCard.vue";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import { useNetworksStore } from "../../stores/networks";
@@ -72,6 +73,12 @@ onBeforeUnmount(resetCopyState);
     </template>
 
     <section class="page-grid page-grid--2">
+      <ReceiveQrCard
+        :address="primaryAddress"
+        :chain-id="activeNetwork.chainId"
+        :network-name="activeNetwork.name"
+      />
+
       <SectionCard title="Address" description="当前账户收款地址">
         <div class="chip-row">
           <span class="status-chip status-chip--accent">{{ activeNetwork.name }}</span>
@@ -97,7 +104,9 @@ onBeforeUnmount(resetCopyState);
           当前环境无法完成复制，请手动复制地址。
         </p>
       </SectionCard>
+    </section>
 
+    <section class="page-grid page-grid--2">
       <SectionCard title="Network" description="请确认对方转入的网络一致">
         <p class="metric-value">{{ activeNetwork.name }}</p>
         <div class="key-value-list">
@@ -114,16 +123,6 @@ onBeforeUnmount(resetCopyState);
             <strong>{{ activeNetwork.explorerUrl ? "Available" : "Unavailable" }}</strong>
           </div>
         </div>
-      </SectionCard>
-    </section>
-
-    <section class="page-grid page-grid--2">
-      <SectionCard title="Receive Checklist" description="发地址前先确认这几项">
-        <ul class="bullet-list">
-          <li>只让对方转入当前显示的 {{ activeNetwork.name }} 网络</li>
-          <li>当前 MVP 只重点覆盖 Native Token 与 ERC20 资产</li>
-          <li>大额转账前先用小额测试，确认链路和地址都正确</li>
-        </ul>
       </SectionCard>
 
       <SectionCard title="Share Summary" description="可直接给对方确认的最小信息">
@@ -145,6 +144,17 @@ onBeforeUnmount(resetCopyState);
           <RouterLink class="button button--ghost" to="/settings/networks">查看网络设置</RouterLink>
           <RouterLink class="button button--secondary" to="/wallet/send">去发送页</RouterLink>
         </div>
+      </SectionCard>
+    </section>
+
+    <section class="page-grid page-grid--1">
+      <SectionCard title="Receive Checklist" description="发地址前先确认这几项">
+        <ul class="bullet-list">
+          <li>只让对方转入当前显示的 {{ activeNetwork.name }} 网络</li>
+          <li>优先让对方扫码当前二维码，再让对方口头复核地址后四位</li>
+          <li>当前 MVP 只重点覆盖 Native Token 与 ERC20 资产</li>
+          <li>大额转账前先用小额测试，确认链路和地址都正确</li>
+        </ul>
       </SectionCard>
     </section>
   </WalletChrome>

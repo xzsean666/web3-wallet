@@ -17,6 +17,7 @@ export interface PendingWalletDraft {
 
 export interface WalletProfile {
   accountId: string;
+  derivationGroupId: string;
   derivationIndex: number;
   walletLabel: string;
   address: WalletAddress;

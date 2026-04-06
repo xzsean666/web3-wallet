@@ -3,20 +3,26 @@ import { createPinia, setActivePinia } from "pinia";
 import { useSessionStore } from "../session";
 
 const {
+  deleteWalletAccountMock,
   loadWalletSessionMock,
+  renameWalletAccountMock,
   setActiveWalletMock,
   unlockWalletMock,
   updateBiometricSettingMock,
 } = vi.hoisted(() => ({
+  deleteWalletAccountMock: vi.fn(),
   loadWalletSessionMock: vi.fn(),
+  renameWalletAccountMock: vi.fn(),
   setActiveWalletMock: vi.fn(),
   unlockWalletMock: vi.fn(),
   updateBiometricSettingMock: vi.fn(),
 }));
 
 vi.mock("../../services/walletBridge", () => ({
+  deleteWalletAccount: deleteWalletAccountMock,
   isTauriWalletRuntime: vi.fn(() => false),
   loadWalletSession: loadWalletSessionMock,
+  renameWalletAccount: renameWalletAccountMock,
   setActiveWallet: setActiveWalletMock,
   unlockWallet: unlockWalletMock,
   updateBiometricSetting: updateBiometricSettingMock,
@@ -25,7 +31,9 @@ vi.mock("../../services/walletBridge", () => ({
 describe("session store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    deleteWalletAccountMock.mockReset();
     loadWalletSessionMock.mockReset();
+    renameWalletAccountMock.mockReset();
     setActiveWalletMock.mockReset();
     unlockWalletMock.mockReset();
     updateBiometricSettingMock.mockReset();
@@ -38,6 +46,7 @@ describe("session store", () => {
       accounts: [
         {
           accountId: "account-1",
+          derivationGroupId: "account-1",
           derivationIndex: 0,
           walletLabel: "Primary Wallet",
           address: "0x1111111111111111111111111111111111111111" as const,
@@ -50,6 +59,7 @@ describe("session store", () => {
         },
         {
           accountId: "account-2",
+          derivationGroupId: "account-2",
           derivationIndex: 0,
           walletLabel: "Imported Ops",
           address: "0x2222222222222222222222222222222222222222" as const,
@@ -84,6 +94,7 @@ describe("session store", () => {
         accounts: [
           {
             accountId: "account-1",
+            derivationGroupId: "account-1",
             derivationIndex: 0,
             walletLabel: "Primary Wallet",
             address: "0x1111111111111111111111111111111111111111" as const,
@@ -96,6 +107,7 @@ describe("session store", () => {
           },
           {
             accountId: "account-2",
+            derivationGroupId: "account-2",
             derivationIndex: 0,
             walletLabel: "Imported Ops",
             address: "0x2222222222222222222222222222222222222222" as const,
@@ -113,6 +125,7 @@ describe("session store", () => {
 
     setActiveWalletMock.mockResolvedValueOnce({
       accountId: "account-2",
+      derivationGroupId: "account-2",
       derivationIndex: 0,
       walletLabel: "Imported Ops",
       address: "0x2222222222222222222222222222222222222222" as const,
@@ -135,6 +148,7 @@ describe("session store", () => {
     const now = new Date().toISOString();
     const profile = {
       accountId: "account-2",
+      derivationGroupId: "account-2",
       derivationIndex: 0,
       walletLabel: "Imported Ops",
       address: "0x2222222222222222222222222222222222222222" as const,
@@ -160,6 +174,119 @@ describe("session store", () => {
     expect(await store.unlockWallet("wrong-secret")).toBe(false);
     expect(await store.unlockWallet("super-secret")).toBe(true);
     expect(store.isUnlocked).toBe(true);
+    expect(store.walletLabel).toBe("Imported Ops");
+  });
+
+  it("renames the selected wallet account and keeps the session unlocked", async () => {
+    const store = useSessionStore();
+    const now = new Date().toISOString();
+
+    store.applyWalletSession(
+      {
+        activeAccountId: "account-2",
+        accounts: [
+          {
+            accountId: "account-2",
+            derivationGroupId: "account-2",
+            derivationIndex: 0,
+            walletLabel: "Imported Ops",
+            address: "0x2222222222222222222222222222222222222222" as const,
+            isBiometricEnabled: false,
+            source: "imported" as const,
+            secretKind: "privateKey" as const,
+            hasBackedUpMnemonic: false,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+
+    renameWalletAccountMock.mockResolvedValueOnce({
+      accountId: "account-2",
+      derivationGroupId: "account-2",
+      derivationIndex: 0,
+      walletLabel: 'Ops Cold Wallet',
+      address: "0x2222222222222222222222222222222222222222" as const,
+      isBiometricEnabled: false,
+      source: "imported" as const,
+      secretKind: "privateKey" as const,
+      hasBackedUpMnemonic: false,
+      createdAt: now,
+      lastUnlockedAt: now,
+    });
+
+    expect(await store.renameWalletAccount("account-2", "Ops Cold Wallet")).toBe(true);
+    expect(store.walletLabel).toBe("Ops Cold Wallet");
+    expect(store.isUnlocked).toBe(true);
+  });
+
+  it("deletes the active wallet account and requires unlocking the fallback account", async () => {
+    const store = useSessionStore();
+    const now = new Date().toISOString();
+
+    store.applyWalletSession(
+      {
+        activeAccountId: "account-1",
+        accounts: [
+          {
+            accountId: "account-1",
+            derivationGroupId: "account-1",
+            derivationIndex: 0,
+            walletLabel: "Primary Wallet",
+            address: "0x1111111111111111111111111111111111111111" as const,
+            isBiometricEnabled: true,
+            source: "created" as const,
+            secretKind: "mnemonic" as const,
+            hasBackedUpMnemonic: true,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+          {
+            accountId: "account-2",
+            derivationGroupId: "account-2",
+            derivationIndex: 0,
+            walletLabel: "Imported Ops",
+            address: "0x2222222222222222222222222222222222222222" as const,
+            isBiometricEnabled: false,
+            source: "imported" as const,
+            secretKind: "privateKey" as const,
+            hasBackedUpMnemonic: false,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+
+    deleteWalletAccountMock.mockResolvedValueOnce({
+      activeAccountId: "account-2",
+      accounts: [
+        {
+          accountId: "account-2",
+          derivationGroupId: "account-2",
+          derivationIndex: 0,
+          walletLabel: "Imported Ops",
+          address: "0x2222222222222222222222222222222222222222" as const,
+          isBiometricEnabled: false,
+          source: "imported" as const,
+          secretKind: "privateKey" as const,
+          hasBackedUpMnemonic: false,
+          createdAt: now,
+          lastUnlockedAt: now,
+        },
+      ],
+    });
+
+    expect(await store.deleteWalletAccount("account-1")).toEqual({
+      ok: true,
+      removedAll: false,
+      requiresUnlock: true,
+    });
+    expect(store.activeAccountId).toBe("account-2");
+    expect(store.isUnlocked).toBe(false);
     expect(store.walletLabel).toBe("Imported Ops");
   });
 });

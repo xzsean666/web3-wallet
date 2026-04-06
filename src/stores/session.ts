@@ -1,8 +1,10 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 import {
+  deleteWalletAccount as deleteWalletAccountBridge,
   isTauriWalletRuntime,
   loadWalletSession,
+  renameWalletAccount as renameWalletAccountBridge,
   setActiveWallet as setActiveWalletBridge,
   unlockWallet as unlockWalletBridge,
   updateBiometricSetting,
@@ -16,6 +18,11 @@ import type {
 } from "../types/wallet";
 
 type ShellMode = "browser-preview" | "tauri";
+type DeleteWalletAccountResult = {
+  ok: boolean;
+  removedAll: boolean;
+  requiresUnlock: boolean;
+};
 
 export const useSessionStore = defineStore("session", () => {
   const walletProfiles = ref<WalletProfile[]>([]);
@@ -223,6 +230,66 @@ export const useSessionStore = defineStore("session", () => {
     return true;
   }
 
+  async function renameWalletAccount(accountId: string, walletLabel: string) {
+    let profile: WalletProfile | null = null;
+
+    try {
+      profile = await renameWalletAccountBridge({
+        accountId,
+        walletLabel,
+      });
+    } catch {
+      return false;
+    }
+
+    if (!profile) {
+      return false;
+    }
+
+    upsertWalletProfile(profile, {
+      unlocked: isUnlocked.value,
+      makeActive: accountId === activeAccountId.value,
+    });
+
+    return true;
+  }
+
+  async function deleteWalletAccount(accountId: string): Promise<DeleteWalletAccountResult> {
+    const deletedActive = activeAccountId.value === accountId;
+    let snapshot: WalletSessionSnapshot | null = null;
+
+    try {
+      snapshot = await deleteWalletAccountBridge({
+        accountId,
+      });
+    } catch {
+      return {
+        ok: false,
+        removedAll: false,
+        requiresUnlock: false,
+      };
+    }
+
+    if (!snapshot || snapshot.accounts.length === 0) {
+      resetSession();
+      return {
+        ok: true,
+        removedAll: true,
+        requiresUnlock: false,
+      };
+    }
+
+    applyWalletSession(snapshot, {
+      unlocked: deletedActive ? false : isUnlocked.value,
+    });
+
+    return {
+      ok: true,
+      removedAll: false,
+      requiresUnlock: deletedActive,
+    };
+  }
+
   function updateLastVisitedRoute(route: string) {
     if (route.startsWith("/wallet") || route.startsWith("/settings")) {
       lastVisitedRoute.value = route;
@@ -246,10 +313,12 @@ export const useSessionStore = defineStore("session", () => {
     lockWallet,
     primaryAddress,
     resetSession,
+    renameWalletAccount,
     selectWalletAccount,
     setBiometricEnabled,
     shellMode,
     statusLabel,
+    deleteWalletAccount,
     unlockWallet,
     updateLastVisitedRoute,
     walletLabel,

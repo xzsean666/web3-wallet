@@ -57,6 +57,7 @@ struct WalletPaths {
 #[derive(Debug)]
 struct StoredWalletMetadata {
     account_id: String,
+    derivation_group_id: String,
     derivation_index: u32,
     wallet_label: String,
     address: String,
@@ -138,6 +139,7 @@ pub struct PendingWalletDraft {
 #[serde(rename_all = "camelCase")]
 pub struct WalletProfile {
     account_id: String,
+    derivation_group_id: String,
     derivation_index: u32,
     wallet_label: String,
     address: String,
@@ -153,6 +155,7 @@ impl From<StoredWalletMetadata> for WalletProfile {
     fn from(value: StoredWalletMetadata) -> Self {
         Self {
             account_id: value.account_id,
+            derivation_group_id: value.derivation_group_id,
             derivation_index: value.derivation_index,
             wallet_label: value.wallet_label,
             address: value.address,
@@ -217,6 +220,19 @@ pub struct DeriveMnemonicAccountRequest {
     source_account_id: String,
     wallet_label: String,
     password: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RenameWalletAccountRequest {
+    account_id: String,
+    wallet_label: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteWalletAccountRequest {
+    account_id: String,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -291,6 +307,8 @@ enum WalletError {
     MetadataCorrupted(String),
     #[error("当前还没有初始化钱包")]
     WalletNotInitialized,
+    #[error("当前找不到要操作的账号")]
+    WalletAccountNotFound,
     #[error("钱包密码不正确，无法解锁本地签名器")]
     InvalidWalletPassword,
     #[error("当前钱包缺少可签名的本地密钥记录，请重新导入或重新创建钱包")]
@@ -399,6 +417,7 @@ pub fn finalize_pending_wallet(
         SecretKind::Mnemonic,
         &StoredWalletMetadata {
             account_id: pending.draft.account_id.clone(),
+            derivation_group_id: pending.draft.account_id.clone(),
             derivation_index: pending.draft.derivation_index,
             wallet_label: pending.draft.wallet_label.clone(),
             address: pending.draft.address.clone(),
@@ -466,6 +485,7 @@ pub fn import_wallet(
         request.secret_kind,
         &StoredWalletMetadata {
             account_id: account_id.clone(),
+            derivation_group_id: account_id.clone(),
             derivation_index: 0,
             wallet_label: request.wallet_label,
             address,
@@ -497,7 +517,8 @@ pub fn derive_mnemonic_account(
     }
 
     let mnemonic = load_mnemonic_for_derivation(&app, &source_metadata, &request.password)?;
-    let next_derivation_index = next_mnemonic_derivation_index(&app, &source_metadata.snapshot_path)?;
+    let next_derivation_index =
+        next_mnemonic_derivation_index(&app, &source_metadata.derivation_group_id)?;
     let private_key = derive_private_key_from_mnemonic(&mnemonic, next_derivation_index)?;
     let address = address_from_private_key(private_key.as_ref())?;
     ensure_wallet_address_is_unique(&app, &address)?;
@@ -505,6 +526,7 @@ pub fn derive_mnemonic_account(
     let now = now_rfc3339();
     let next_metadata = StoredWalletMetadata {
         account_id: build_account_id(&address),
+        derivation_group_id: source_metadata.derivation_group_id.clone(),
         derivation_index: next_derivation_index,
         wallet_label: request.wallet_label,
         address,
@@ -521,6 +543,64 @@ pub fn derive_mnemonic_account(
     save_active_account_id(&app, Some(&next_metadata.account_id))?;
 
     Ok(next_metadata.into())
+}
+
+#[tauri::command]
+pub fn rename_wallet_account(
+    app: AppHandle,
+    request: RenameWalletAccountRequest,
+) -> WalletCommandResult<Option<WalletProfile>> {
+    let request = normalize_rename_request(request)?;
+    let metadata = match load_wallet_metadata(&app, &request.account_id)? {
+        Some(metadata) => metadata,
+        None => return Ok(None),
+    };
+
+    let next_metadata = StoredWalletMetadata {
+        wallet_label: request.wallet_label,
+        ..metadata
+    };
+
+    save_wallet_metadata(&app, &next_metadata)?;
+
+    Ok(Some(next_metadata.into()))
+}
+
+#[tauri::command]
+pub fn delete_wallet_account(
+    app: AppHandle,
+    request: DeleteWalletAccountRequest,
+) -> WalletCommandResult<WalletSessionSnapshot> {
+    let metadata = load_wallet_metadata(&app, &request.account_id)?
+        .ok_or(WalletError::WalletAccountNotFound)?;
+    let deleted_account_id = metadata.account_id.clone();
+    let deleted_snapshot_path = metadata.snapshot_path.clone();
+    let previous_active_account_id = load_active_account_id(&app)?;
+
+    delete_wallet_metadata(&app, &request.account_id)?;
+
+    let remaining_accounts = load_wallet_accounts(&app)?;
+    delete_snapshot_if_unused(&deleted_snapshot_path, &remaining_accounts)?;
+
+    let next_active_account_id = if remaining_accounts.is_empty() {
+        None
+    } else if previous_active_account_id.as_deref() == Some(deleted_account_id.as_str()) {
+        Some(remaining_accounts[0].account_id.clone())
+    } else if remaining_accounts
+        .iter()
+        .any(|entry| Some(entry.account_id.as_str()) == previous_active_account_id.as_deref())
+    {
+        previous_active_account_id
+    } else {
+        Some(remaining_accounts[0].account_id.clone())
+    };
+
+    save_active_account_id(&app, next_active_account_id.as_deref())?;
+
+    Ok(WalletSessionSnapshot {
+        accounts: remaining_accounts.into_iter().map(Into::into).collect(),
+        active_account_id: next_active_account_id,
+    })
 }
 
 #[tauri::command]
@@ -709,6 +789,21 @@ fn normalize_derive_request(
     })
 }
 
+fn normalize_rename_request(
+    request: RenameWalletAccountRequest,
+) -> Result<RenameWalletAccountRequest, WalletError> {
+    let wallet_label = request.wallet_label.trim().to_owned();
+
+    if wallet_label.is_empty() {
+        return Err(WalletError::EmptyWalletLabel);
+    }
+
+    Ok(RenameWalletAccountRequest {
+        account_id: request.account_id,
+        wallet_label,
+    })
+}
+
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
 }
@@ -884,8 +979,8 @@ fn load_mnemonic_for_derivation(
         return Err(WalletError::MnemonicDerivationNotSupported);
     }
 
-    let mnemonic_phrase =
-        std::str::from_utf8(secret_record.as_ref()).map_err(|_| WalletError::InvalidStoredSecret)?;
+    let mnemonic_phrase = std::str::from_utf8(secret_record.as_ref())
+        .map_err(|_| WalletError::InvalidStoredSecret)?;
     let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic_phrase)?;
     let derived_root_key = derive_private_key_from_mnemonic(&mnemonic, metadata.derivation_index)?;
     let derived_address = address_from_private_key(derived_root_key.as_ref())?;
@@ -929,7 +1024,10 @@ fn load_secret_record(
         return Err(WalletError::InvalidStoredSecret);
     }
 
-    Ok((secret_kind, Zeroizing::new(secret_record[delimiter + 1..].to_vec())))
+    Ok((
+        secret_kind,
+        Zeroizing::new(secret_record[delimiter + 1..].to_vec()),
+    ))
 }
 
 fn build_transfer_transaction(
@@ -1163,6 +1261,7 @@ fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
         r#"
         CREATE TABLE IF NOT EXISTS wallet_accounts (
           account_id TEXT PRIMARY KEY,
+          derivation_group_id TEXT NOT NULL,
           derivation_index INTEGER NOT NULL DEFAULT 0,
           wallet_label TEXT NOT NULL,
           address TEXT NOT NULL,
@@ -1203,6 +1302,22 @@ fn ensure_wallet_accounts_schema(connection: &Connection) -> Result<(), WalletEr
         )?;
     }
 
+    if !columns.iter().any(|column| column == "derivation_group_id") {
+        connection.execute(
+            "ALTER TABLE wallet_accounts ADD COLUMN derivation_group_id TEXT NOT NULL DEFAULT ''",
+            [],
+        )?;
+    }
+
+    connection.execute(
+        r#"
+        UPDATE wallet_accounts
+        SET derivation_group_id = account_id
+        WHERE derivation_group_id = ''
+        "#,
+        [],
+    )?;
+
     Ok(())
 }
 
@@ -1213,6 +1328,7 @@ fn load_wallet_accounts(app: &AppHandle) -> Result<Vec<StoredWalletMetadata>, Wa
         r#"
         SELECT
           account_id,
+          derivation_group_id,
           derivation_index,
           wallet_label,
           address,
@@ -1249,6 +1365,7 @@ fn load_wallet_metadata(
             r#"
             SELECT
               account_id,
+              derivation_group_id,
               derivation_index,
               wallet_label,
               address,
@@ -1283,10 +1400,7 @@ fn load_active_account_id(app: &AppHandle) -> Result<Option<String>, WalletError
         .map_err(Into::into)
 }
 
-fn save_active_account_id(
-    app: &AppHandle,
-    account_id: Option<&str>,
-) -> Result<(), WalletError> {
+fn save_active_account_id(app: &AppHandle, account_id: Option<&str>) -> Result<(), WalletError> {
     let connection = metadata_connection(app)?;
     connection.execute(
         r#"
@@ -1304,12 +1418,16 @@ fn save_active_account_id(
     Ok(())
 }
 
-fn save_wallet_metadata(app: &AppHandle, metadata: &StoredWalletMetadata) -> Result<(), WalletError> {
+fn save_wallet_metadata(
+    app: &AppHandle,
+    metadata: &StoredWalletMetadata,
+) -> Result<(), WalletError> {
     let connection = metadata_connection(app)?;
     connection.execute(
         r#"
         INSERT INTO wallet_accounts (
           account_id,
+          derivation_group_id,
           derivation_index,
           wallet_label,
           address,
@@ -1321,8 +1439,9 @@ fn save_wallet_metadata(app: &AppHandle, metadata: &StoredWalletMetadata) -> Res
           last_unlocked_at,
           snapshot_path
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
         ON CONFLICT(account_id) DO UPDATE SET
+          derivation_group_id = excluded.derivation_group_id,
           derivation_index = excluded.derivation_index,
           wallet_label = excluded.wallet_label,
           address = excluded.address,
@@ -1336,6 +1455,7 @@ fn save_wallet_metadata(app: &AppHandle, metadata: &StoredWalletMetadata) -> Res
         "#,
         params![
             &metadata.account_id,
+            &metadata.derivation_group_id,
             metadata.derivation_index as i64,
             &metadata.wallet_label,
             &metadata.address,
@@ -1347,6 +1467,16 @@ fn save_wallet_metadata(app: &AppHandle, metadata: &StoredWalletMetadata) -> Res
             &metadata.last_unlocked_at,
             &metadata.snapshot_path,
         ],
+    )?;
+
+    Ok(())
+}
+
+fn delete_wallet_metadata(app: &AppHandle, account_id: &str) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    connection.execute(
+        "DELETE FROM wallet_accounts WHERE account_id = ?1",
+        params![account_id],
     )?;
 
     Ok(())
@@ -1379,11 +1509,10 @@ fn migrate_legacy_wallet_profile(
         return Ok(());
     }
 
-    let existing_count = connection.query_row(
-        "SELECT COUNT(*) FROM wallet_accounts",
-        [],
-        |row| row.get::<_, i64>(0),
-    )?;
+    let existing_count =
+        connection.query_row("SELECT COUNT(*) FROM wallet_accounts", [], |row| {
+            row.get::<_, i64>(0)
+        })?;
 
     if existing_count > 0 {
         return Ok(());
@@ -1411,6 +1540,7 @@ fn migrate_legacy_wallet_profile(
 
                 Ok(StoredWalletMetadata {
                     account_id: build_account_id(&address),
+                    derivation_group_id: build_account_id(&address),
                     derivation_index: 0,
                     wallet_label: row.get(0)?,
                     address,
@@ -1433,6 +1563,7 @@ fn migrate_legacy_wallet_profile(
             r#"
             INSERT OR IGNORE INTO wallet_accounts (
               account_id,
+              derivation_group_id,
               derivation_index,
               wallet_label,
               address,
@@ -1444,10 +1575,11 @@ fn migrate_legacy_wallet_profile(
               last_unlocked_at,
               snapshot_path
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             "#,
             params![
                 &metadata.account_id,
+                &metadata.derivation_group_id,
                 metadata.derivation_index as i64,
                 &metadata.wallet_label,
                 &metadata.address,
@@ -1478,22 +1610,45 @@ fn migrate_legacy_wallet_profile(
     Ok(())
 }
 
-fn load_wallet_metadata_from_row(row: &rusqlite::Row<'_>) -> Result<StoredWalletMetadata, rusqlite::Error> {
+fn load_wallet_metadata_from_row(
+    row: &rusqlite::Row<'_>,
+) -> Result<StoredWalletMetadata, rusqlite::Error> {
     Ok(StoredWalletMetadata {
         account_id: row.get(0)?,
-        derivation_index: row.get::<_, i64>(1)? as u32,
-        wallet_label: row.get(2)?,
-        address: row.get(3)?,
-        source: WalletSource::from_db_value(&row.get::<_, String>(4)?)
+        derivation_group_id: row.get(1)?,
+        derivation_index: row.get::<_, i64>(2)? as u32,
+        wallet_label: row.get(3)?,
+        address: row.get(4)?,
+        source: WalletSource::from_db_value(&row.get::<_, String>(5)?)
             .map_err(to_sql_conversion_error)?,
-        secret_kind: SecretKind::from_db_value(&row.get::<_, String>(5)?)
+        secret_kind: SecretKind::from_db_value(&row.get::<_, String>(6)?)
             .map_err(to_sql_conversion_error)?,
-        is_biometric_enabled: row.get::<_, i64>(6)? != 0,
-        has_backed_up_mnemonic: row.get::<_, i64>(7)? != 0,
-        created_at: row.get(8)?,
-        last_unlocked_at: row.get(9)?,
-        snapshot_path: row.get(10)?,
+        is_biometric_enabled: row.get::<_, i64>(7)? != 0,
+        has_backed_up_mnemonic: row.get::<_, i64>(8)? != 0,
+        created_at: row.get(9)?,
+        last_unlocked_at: row.get(10)?,
+        snapshot_path: row.get(11)?,
     })
+}
+
+fn delete_snapshot_if_unused(
+    snapshot_path: &str,
+    remaining_accounts: &[StoredWalletMetadata],
+) -> Result<(), WalletError> {
+    if remaining_accounts
+        .iter()
+        .any(|entry| entry.snapshot_path == snapshot_path)
+    {
+        return Ok(());
+    }
+
+    let snapshot_file = PathBuf::from(snapshot_path);
+
+    if snapshot_file.is_file() {
+        fs::remove_file(snapshot_file)?;
+    }
+
+    Ok(())
 }
 
 fn build_account_id(address: &str) -> String {
@@ -1515,13 +1670,14 @@ fn ensure_wallet_address_is_unique(app: &AppHandle, address: &str) -> Result<(),
 
 fn next_mnemonic_derivation_index(
     app: &AppHandle,
-    snapshot_path: &str,
+    derivation_group_id: &str,
 ) -> Result<u32, WalletError> {
     let accounts = load_wallet_accounts(app)?;
     let max_index = accounts
         .into_iter()
         .filter(|metadata| {
-            metadata.secret_kind == SecretKind::Mnemonic && metadata.snapshot_path == snapshot_path
+            metadata.secret_kind == SecretKind::Mnemonic
+                && metadata.derivation_group_id == derivation_group_id
         })
         .map(|metadata| metadata.derivation_index)
         .max()

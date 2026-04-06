@@ -26,6 +26,15 @@ interface UpdateBiometricRequest {
   isBiometricEnabled: boolean;
 }
 
+interface RenameWalletAccountRequest {
+  accountId: string;
+  walletLabel: string;
+}
+
+interface DeleteWalletAccountRequest {
+  accountId: string;
+}
+
 interface UnlockWalletRequest {
   accountId: string;
   password: string;
@@ -135,6 +144,7 @@ export async function finalizePendingWallet() {
 
   const nextWallet: WalletProfile = {
     ...previewState.pending.draft,
+    derivationGroupId: previewState.pending.draft.accountId,
     hasBackedUpMnemonic: true,
     lastUnlockedAt: new Date().toISOString(),
   };
@@ -162,6 +172,7 @@ export async function importWallet(request: ImportWalletRequest) {
 
   const profile: WalletProfile = {
     accountId: buildAccountId(account.address),
+    derivationGroupId: buildAccountId(account.address),
     derivationIndex: 0,
     walletLabel: request.walletLabel.trim(),
     address: account.address,
@@ -221,6 +232,7 @@ export async function deriveMnemonicAccount(request: DeriveMnemonicAccountReques
 
   const nextProfile: WalletProfile = {
     accountId: buildAccountId(nextAccount.address),
+    derivationGroupId: sourceAccount.derivationGroupId,
     derivationIndex: nextDerivationIndex,
     walletLabel: request.walletLabel.trim(),
     address: nextAccount.address,
@@ -319,6 +331,53 @@ export async function updateBiometricSetting(request: UpdateBiometricRequest) {
 
   upsertPreviewAccount(nextProfile);
   return nextProfile;
+}
+
+export async function renameWalletAccount(request: RenameWalletAccountRequest) {
+  if (isTauriWalletRuntime()) {
+    return invoke<WalletProfile | null>("rename_wallet_account", { request });
+  }
+
+  const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
+  const nextLabel = request.walletLabel.trim();
+
+  if (!account) {
+    return null;
+  }
+
+  if (!nextLabel) {
+    throw new Error("钱包名称不能为空");
+  }
+
+  const nextProfile: WalletProfile = {
+    ...account,
+    walletLabel: nextLabel,
+  };
+
+  upsertPreviewAccount(nextProfile);
+  return nextProfile;
+}
+
+export async function deleteWalletAccount(request: DeleteWalletAccountRequest) {
+  if (isTauriWalletRuntime()) {
+    return invoke<WalletSessionSnapshot>("delete_wallet_account", { request });
+  }
+
+  const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
+
+  if (!account) {
+    throw new Error("当前找不到要操作的账号");
+  }
+
+  previewState.accounts = previewState.accounts.filter((entry) => entry.accountId !== request.accountId);
+  delete previewState.passwordHashes[request.accountId];
+  delete previewState.mnemonicSecrets[request.accountId];
+
+  if (previewState.activeAccountId === request.accountId) {
+    previewState.activeAccountId = previewState.accounts[0]?.accountId ?? null;
+  }
+
+  return createPreviewSessionSnapshot();
 }
 
 export async function signTransferTransaction(request: SignTransferRequest) {
