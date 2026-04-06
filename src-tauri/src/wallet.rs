@@ -1,13 +1,13 @@
 use std::{
+    collections::HashMap,
     convert::TryFrom,
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
 };
 
-use alloy_consensus::{
-    SignableTransaction, TxEip1559, TxEnvelope, TxLegacy, Typed2718, TypedTransaction,
-};
+use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, TxLegacy, TypedTransaction};
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{keccak256, Address, Bytes, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::PrivateKeySigner;
@@ -18,7 +18,7 @@ use bip39::{
 use chrono::Utc;
 use hmac::{Hmac, Mac};
 use iota_stronghold::{KeyProvider, Stronghold};
-use k256::{ecdsa::SigningKey, elliptic_curve::sec1::ToEncodedPoint, NonZeroScalar};
+use k256::{ecdsa::SigningKey, NonZeroScalar};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::Sha512;
@@ -34,7 +34,7 @@ const ETH_BIP44_PREFIX: [u32; 4] = [44 + BIP32_HARDEN, 60 + BIP32_HARDEN, 0 + BI
 const BIP32_HARDEN: u32 = 0x8000_0000;
 
 type HmacSha512 = Hmac<Sha512>;
-type WalletCommandResult<T> = Result<T, String>;
+type WalletCommandResult<T> = Result<T, WalletError>;
 
 #[derive(Default)]
 pub struct WalletRuntimeState {
@@ -53,7 +53,6 @@ struct PendingOnboarding {
 #[derive(Debug)]
 struct WalletPaths {
     metadata_db_path: PathBuf,
-    snapshot_path: PathBuf,
     salt_path: PathBuf,
 }
 
@@ -297,8 +296,87 @@ pub struct SignedTransferPayload {
     tx_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UiNetworkConfig {
+    id: String,
+    source: String,
+    name: String,
+    chain_id: i64,
+    rpc_url: String,
+    symbol: String,
+    explorer_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UiTrackedToken {
+    id: String,
+    symbol: String,
+    name: String,
+    balance: String,
+    decimals: i64,
+    contract_address: String,
+    network_ids: Vec<String>,
+    source: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UiAddressBookEntry {
+    id: String,
+    network_id: String,
+    label: String,
+    address: String,
+    note: String,
+    created_at: String,
+    updated_at: String,
+    last_used_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct UiActivityItem {
+    id: String,
+    title: String,
+    subtitle: String,
+    status: String,
+    account_id: Option<String>,
+    account_address: Option<String>,
+    tx_hash: Option<String>,
+    network_id: Option<String>,
+    asset_id: Option<String>,
+    asset_type: Option<String>,
+    asset_symbol: Option<String>,
+    amount: Option<String>,
+    recipient_address: Option<String>,
+    created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedUiState {
+    custom_networks: Option<Vec<UiNetworkConfig>>,
+    active_network_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct WalletScopedUiState {
+    custom_tokens: Option<Vec<UiTrackedToken>>,
+    recent_activity: Option<Vec<UiActivityItem>>,
+    address_book: Option<Vec<UiAddressBookEntry>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PersistedUiStateEnvelope {
+    global: PersistedUiState,
+    wallet_scopes: HashMap<String, WalletScopedUiState>,
+}
+
 #[derive(Debug, Error)]
-enum WalletError {
+pub enum WalletError {
     #[error("钱包名称不能为空")]
     EmptyWalletLabel,
     #[error("钱包密码至少需要 8 位")]
@@ -359,6 +437,15 @@ enum WalletError {
     SigningFailed(String),
 }
 
+impl Serialize for WalletError {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
 #[tauri::command]
 pub fn create_wallet(
     app: AppHandle,
@@ -367,7 +454,7 @@ pub fn create_wallet(
 ) -> WalletCommandResult<PendingWalletSession> {
     let request = normalize_create_request(request)?;
 
-    let mnemonic = Mnemonic::generate_in(Language::English, 12)?;
+    let mnemonic = Mnemonic::generate_in(Language::English, 12).map_err(WalletError::from)?;
     let mnemonic_phrase = Zeroizing::new(mnemonic.to_string());
     let private_key = derive_private_key_from_mnemonic(&mnemonic, 0)?;
     let address = address_from_private_key(private_key.as_ref())?;
@@ -424,11 +511,11 @@ pub fn get_pending_backup_phrase(
     let pending = guard.as_mut().ok_or(WalletError::NoPendingWallet)?;
 
     if !matches!(pending.draft.secret_kind, SecretKind::Mnemonic) {
-        return Err(WalletError::InvalidPendingWallet.to_string());
+        return Err(WalletError::InvalidPendingWallet);
     }
 
     if pending.backup_access_token != request.backup_access_token {
-        return Err(WalletError::InvalidPendingBackupAccess.to_string());
+        return Err(WalletError::InvalidPendingBackupAccess);
     }
 
     pending.has_revealed_backup_phrase = true;
@@ -454,15 +541,15 @@ pub fn finalize_pending_wallet(
         let pending = guard.as_ref().ok_or(WalletError::NoPendingWallet)?;
 
         if pending.backup_access_token != request.backup_access_token {
-            return Err(WalletError::InvalidPendingBackupAccess.to_string());
+            return Err(WalletError::InvalidPendingBackupAccess);
         }
 
         if !pending.has_revealed_backup_phrase {
-            return Err(WalletError::BackupPhraseRevealRequired.to_string());
+            return Err(WalletError::BackupPhraseRevealRequired);
         }
 
         if !request.confirmed_backup {
-            return Err(WalletError::BackupConfirmationRequired.to_string());
+            return Err(WalletError::BackupConfirmationRequired);
         }
 
         guard.take().ok_or(WalletError::NoPendingWallet)?
@@ -499,7 +586,7 @@ pub fn finalize_pending_wallet(
         Err(error) => {
             let mut guard = state.pending_onboarding.lock().unwrap();
             *guard = Some(pending);
-            Err(error.to_string())
+            Err(error)
         }
     }
 }
@@ -521,7 +608,8 @@ pub fn import_wallet(
     let (address, secret_bytes) = match request.secret_kind {
         SecretKind::Mnemonic => {
             let normalized = normalize_mnemonic_phrase(&request.secret_value);
-            let mnemonic = Mnemonic::parse_in_normalized(Language::English, &normalized)?;
+            let mnemonic = Mnemonic::parse_in_normalized(Language::English, &normalized)
+                .map_err(WalletError::from)?;
             let private_key = derive_private_key_from_mnemonic(&mnemonic, 0)?;
             (
                 address_from_private_key(private_key.as_ref())?,
@@ -562,7 +650,6 @@ pub fn import_wallet(
                 .into_owned(),
         },
     )
-    .map_err(Into::into)
 }
 
 #[tauri::command]
@@ -577,7 +664,7 @@ pub fn derive_mnemonic_account(
         .ok_or(WalletError::WalletNotInitialized)?;
 
     if source_metadata.secret_kind != SecretKind::Mnemonic {
-        return Err(WalletError::MnemonicDerivationNotSupported.to_string());
+        return Err(WalletError::MnemonicDerivationNotSupported);
     }
 
     let mnemonic = load_mnemonic_for_derivation(&app, &source_metadata, &request.password)?;
@@ -588,6 +675,9 @@ pub fn derive_mnemonic_account(
     ensure_wallet_address_is_unique(&app, &address)?;
 
     let now = now_rfc3339();
+    let source_snapshot_path = validated_snapshot_path(&app, &source_metadata.snapshot_path)?
+        .to_string_lossy()
+        .into_owned();
     let next_metadata = StoredWalletMetadata {
         account_id: build_account_id(&address),
         derivation_group_id: source_metadata.derivation_group_id.clone(),
@@ -600,7 +690,7 @@ pub fn derive_mnemonic_account(
         has_backed_up_mnemonic: source_metadata.has_backed_up_mnemonic,
         created_at: now.clone(),
         last_unlocked_at: Some(now),
-        snapshot_path: source_metadata.snapshot_path,
+        snapshot_path: source_snapshot_path,
     };
 
     save_wallet_metadata(&app, &next_metadata)?;
@@ -612,9 +702,11 @@ pub fn derive_mnemonic_account(
 #[tauri::command]
 pub fn rename_wallet_account(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: RenameWalletAccountRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
     let request = normalize_rename_request(request)?;
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = match load_wallet_metadata(&app, &request.account_id)? {
         Some(metadata) => metadata,
         None => return Ok(None),
@@ -647,7 +739,7 @@ pub fn delete_wallet_account(
     delete_wallet_metadata(&app, &request.account_id)?;
 
     let remaining_accounts = load_wallet_accounts(&app)?;
-    delete_snapshot_if_unused(&deleted_snapshot_path, &remaining_accounts)?;
+    delete_snapshot_if_unused(&app, &deleted_snapshot_path, &remaining_accounts)?;
 
     let next_active_account_id = if remaining_accounts.is_empty() {
         None
@@ -697,15 +789,16 @@ pub fn load_wallet_profile(app: AppHandle) -> WalletCommandResult<Option<WalletP
 #[tauri::command]
 pub fn unlock_wallet(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: UnlockWalletRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
-    let metadata = match load_wallet_metadata(&app, &request.account_id)? {
-        Some(metadata) => metadata,
-        None => return Ok(None),
-    };
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
+    let metadata = load_wallet_metadata(&app, &request.account_id)?
+        .ok_or(WalletError::WalletAccountNotFound)?;
+    let snapshot_path = validated_snapshot_path(&app, &metadata.snapshot_path)?;
 
     let stronghold = open_stronghold(
-        Path::new(&metadata.snapshot_path),
+        &snapshot_path,
         &request.password,
         &wallet_paths(&app)?.salt_path,
     );
@@ -717,7 +810,7 @@ pub fn unlock_wallet(
                 return Ok(None);
             }
 
-            return Err(error.to_string());
+            return Err(error);
         }
     };
 
@@ -740,8 +833,10 @@ pub fn unlock_wallet(
 #[tauri::command]
 pub fn set_active_wallet(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: SetActiveWalletRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = match load_wallet_metadata(&app, &request.account_id)? {
         Some(metadata) => metadata,
         None => return Ok(None),
@@ -754,8 +849,10 @@ pub fn set_active_wallet(
 #[tauri::command]
 pub fn update_biometric_setting(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: UpdateBiometricRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = match load_wallet_metadata(&app, &request.account_id)? {
         Some(metadata) => metadata,
         None => return Ok(None),
@@ -783,7 +880,6 @@ pub fn sign_transfer_transaction(
 
     let signer = PrivateKeySigner::from_slice(private_key.as_ref())
         .map_err(|_| WalletError::InvalidPrivateKey)?;
-    let mut tx = tx;
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
         .map_err(|error| WalletError::SigningFailed(error.to_string()))?;
@@ -794,6 +890,16 @@ pub fn sign_transfer_transaction(
         raw_transaction: format!("0x{}", hex::encode(raw_transaction)),
         tx_hash: format!("0x{}", hex::encode(envelope.tx_hash().as_slice())),
     })
+}
+
+#[tauri::command]
+pub fn load_ui_state(app: AppHandle) -> WalletCommandResult<PersistedUiStateEnvelope> {
+    load_persisted_ui_state(&app)
+}
+
+#[tauri::command]
+pub fn save_ui_state(app: AppHandle, state: PersistedUiStateEnvelope) -> WalletCommandResult<()> {
+    save_persisted_ui_state(&app, &state)
 }
 
 fn normalize_create_request(
@@ -919,8 +1025,7 @@ fn derive_private_key_from_seed(
         (signing_key, chain_code) = derive_child_signing_key(&signing_key, &chain_code, index)?;
     }
 
-    (signing_key, chain_code) =
-        derive_child_signing_key(&signing_key, &chain_code, derivation_index)?;
+    let (signing_key, _) = derive_child_signing_key(&signing_key, &chain_code, derivation_index)?;
 
     let mut private_key = [0u8; 32];
     private_key.copy_from_slice(&signing_key.to_bytes());
@@ -949,10 +1054,8 @@ fn derive_child_signing_key(
     data.extend_from_slice(&index.to_be_bytes());
 
     let (tweak, next_chain_code) = hmac_and_split(chain_code, &data)?;
-    let parent_scalar =
-        NonZeroScalar::from_repr(parent_key.to_bytes()).ok_or(WalletError::KeyDerivationFailed)?;
-    let tweaked = tweak.add(&parent_scalar);
-    let child_scalar =
+    let tweaked = tweak.add(parent_key.as_nonzero_scalar());
+    let child_scalar: NonZeroScalar =
         Option::from(NonZeroScalar::new(tweaked)).ok_or(WalletError::KeyDerivationFailed)?;
 
     Ok((SigningKey::from(child_scalar), next_chain_code))
@@ -971,7 +1074,10 @@ fn hmac_and_split(key: &[u8], data: &[u8]) -> Result<(NonZeroScalar, [u8; 32]), 
     Ok((scalar, chain_code))
 }
 
-fn address_from_private_key(private_key: &[u8; 32]) -> Result<String, WalletError> {
+fn address_from_private_key(private_key: &[u8]) -> Result<String, WalletError> {
+    let private_key: &[u8; 32] = private_key
+        .try_into()
+        .map_err(|_| WalletError::InvalidPrivateKey)?;
     let signing_key = SigningKey::from_bytes(&(*private_key).into())
         .map_err(|_| WalletError::InvalidPrivateKey)?;
     let encoded = signing_key.verifying_key().to_encoded_point(false);
@@ -1070,10 +1176,10 @@ fn load_secret_record(
     metadata: &StoredWalletMetadata,
     password: &str,
 ) -> Result<(SecretKind, Zeroizing<Vec<u8>>), WalletError> {
-    let snapshot_path = Path::new(&metadata.snapshot_path);
+    let snapshot_path = validated_snapshot_path(app, &metadata.snapshot_path)?;
     let paths = wallet_paths(app)?;
 
-    let stronghold = open_stronghold(snapshot_path, password, &paths.salt_path)
+    let stronghold = open_stronghold(&snapshot_path, password, &paths.salt_path)
         .map_err(normalize_secret_access_error)?;
     let client = stronghold
         .load_client(STRONGHOLD_CLIENT.to_vec())
@@ -1332,7 +1438,7 @@ fn stronghold_storage_exists_without_salt(salt_path: &Path) -> Result<bool, Wall
 
     let metadata_db_path = local_data_dir.join("wallet-meta.sqlite3");
 
-    if metadata_db_path.is_file() {
+    if metadata_db_contains_wallet_accounts(&metadata_db_path)? {
         return Ok(true);
     }
 
@@ -1358,6 +1464,81 @@ fn stronghold_storage_exists_without_salt(salt_path: &Path) -> Result<bool, Wall
     Ok(false)
 }
 
+fn managed_snapshot_dir(app: &AppHandle) -> Result<PathBuf, WalletError> {
+    let paths = wallet_paths(app)?;
+    paths
+        .metadata_db_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or(WalletError::PathUnavailable)
+}
+
+fn validate_snapshot_path_in_directory(
+    snapshot_path: &Path,
+    managed_dir: &Path,
+) -> Result<PathBuf, WalletError> {
+    if !snapshot_path.is_absolute() {
+        return Err(WalletError::MetadataCorrupted(
+            "wallet snapshot path must be absolute".into(),
+        ));
+    }
+
+    if !snapshot_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("stronghold"))
+    {
+        return Err(WalletError::MetadataCorrupted(
+            "wallet snapshot path must target a .stronghold file".into(),
+        ));
+    }
+
+    let file_name = snapshot_path.file_name().ok_or_else(|| {
+        WalletError::MetadataCorrupted("wallet snapshot path is missing a file name".into())
+    })?;
+    let parent_dir = snapshot_path.parent().ok_or_else(|| {
+        WalletError::MetadataCorrupted("wallet snapshot path is missing a parent directory".into())
+    })?;
+    let canonical_parent = fs::canonicalize(parent_dir)?;
+    let canonical_managed_dir = fs::canonicalize(managed_dir)?;
+
+    if canonical_parent != canonical_managed_dir {
+        return Err(WalletError::MetadataCorrupted(
+            "wallet snapshot path points outside the managed stronghold directory".into(),
+        ));
+    }
+
+    Ok(canonical_managed_dir.join(file_name))
+}
+
+fn validated_snapshot_path(app: &AppHandle, snapshot_path: &str) -> Result<PathBuf, WalletError> {
+    let managed_dir = managed_snapshot_dir(app)?;
+    validate_snapshot_path_in_directory(Path::new(snapshot_path), &managed_dir)
+}
+
+fn metadata_db_contains_wallet_accounts(metadata_db_path: &Path) -> Result<bool, WalletError> {
+    if !metadata_db_path.is_file() {
+        return Ok(false);
+    }
+
+    let connection = Connection::open(metadata_db_path)?;
+    let has_wallet_accounts_table = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'wallet_accounts')",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+
+    if has_wallet_accounts_table == 0 {
+        return Ok(false);
+    }
+
+    let wallet_count = connection.query_row("SELECT COUNT(*) FROM wallet_accounts", [], |row| {
+        row.get::<_, i64>(0)
+    })?;
+
+    Ok(wallet_count > 0)
+}
+
 fn wallet_paths(app: &AppHandle) -> Result<WalletPaths, WalletError> {
     let local_data_dir = app
         .path()
@@ -1368,16 +1549,12 @@ fn wallet_paths(app: &AppHandle) -> Result<WalletPaths, WalletError> {
 
     Ok(WalletPaths {
         metadata_db_path: local_data_dir.join("wallet-meta.sqlite3"),
-        snapshot_path: local_data_dir.join("wallet.stronghold"),
         salt_path: local_data_dir.join("salt.txt"),
     })
 }
 
 fn snapshot_path_for_account(app: &AppHandle, account_id: &str) -> Result<PathBuf, WalletError> {
-    let paths = wallet_paths(app)?;
-    Ok(paths
-        .metadata_db_path
-        .with_file_name(format!("{account_id}.stronghold")))
+    Ok(managed_snapshot_dir(app)?.join(format!("{account_id}.stronghold")))
 }
 
 fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
@@ -1403,6 +1580,10 @@ fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
         CREATE TABLE IF NOT EXISTS wallet_state (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           active_account_id TEXT
+        );
+        CREATE TABLE IF NOT EXISTS ui_state (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          payload TEXT NOT NULL
         );
         "#,
     )?;
@@ -1525,6 +1706,48 @@ fn load_active_account_id(app: &AppHandle) -> Result<Option<String>, WalletError
         .optional()
         .map(|value| value.flatten())
         .map_err(Into::into)
+}
+
+fn load_persisted_ui_state(app: &AppHandle) -> Result<PersistedUiStateEnvelope, WalletError> {
+    let connection = metadata_connection(app)?;
+    let payload = connection
+        .query_row("SELECT payload FROM ui_state WHERE id = 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .optional()?;
+
+    let Some(payload) = payload else {
+        return Ok(PersistedUiStateEnvelope::default());
+    };
+
+    serde_json::from_str::<PersistedUiStateEnvelope>(&payload).map_err(|error| {
+        WalletError::MetadataCorrupted(format!("ui state payload decode failed: {error}"))
+    })
+}
+
+fn save_persisted_ui_state(
+    app: &AppHandle,
+    state: &PersistedUiStateEnvelope,
+) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    let payload = serde_json::to_string(state).map_err(|error| {
+        WalletError::MetadataCorrupted(format!("ui state payload encode failed: {error}"))
+    })?;
+
+    connection.execute(
+        r#"
+        INSERT INTO ui_state (
+          id,
+          payload
+        )
+        VALUES (1, ?1)
+        ON CONFLICT(id) DO UPDATE SET
+          payload = excluded.payload
+        "#,
+        params![payload],
+    )?;
+
+    Ok(())
 }
 
 fn save_active_account_id(app: &AppHandle, account_id: Option<&str>) -> Result<(), WalletError> {
@@ -1759,6 +1982,7 @@ fn load_wallet_metadata_from_row(
 }
 
 fn delete_snapshot_if_unused(
+    app: &AppHandle,
     snapshot_path: &str,
     remaining_accounts: &[StoredWalletMetadata],
 ) -> Result<(), WalletError> {
@@ -1769,7 +1993,7 @@ fn delete_snapshot_if_unused(
         return Ok(());
     }
 
-    let snapshot_file = PathBuf::from(snapshot_path);
+    let snapshot_file = validated_snapshot_path(app, snapshot_path)?;
 
     if snapshot_file.is_file() {
         fs::remove_file(snapshot_file)?;
@@ -1851,11 +2075,91 @@ mod tests {
     fn refuses_to_regenerate_salt_when_wallet_storage_already_exists() {
         let temp_dir = unique_temp_dir("salt-missing");
         fs::create_dir_all(&temp_dir).unwrap();
-        fs::write(temp_dir.join("wallet-meta.sqlite3"), b"legacy-wallet").unwrap();
+        fs::write(temp_dir.join("wallet.stronghold"), b"legacy-wallet").unwrap();
 
         let result = derive_stronghold_password_hash("super-secret", &temp_dir.join("salt.txt"));
 
         assert!(matches!(result, Err(WalletError::StrongholdSaltMissing)));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn allows_generating_salt_when_metadata_db_only_contains_ui_state() {
+        let temp_dir = unique_temp_dir("ui-state-only");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let metadata_db_path = temp_dir.join("wallet-meta.sqlite3");
+        let connection = Connection::open(&metadata_db_path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE ui_state (
+                  id INTEGER PRIMARY KEY CHECK (id = 1),
+                  payload TEXT NOT NULL
+                );
+                INSERT INTO ui_state (id, payload) VALUES (1, '{}');
+                "#,
+            )
+            .unwrap();
+
+        let result = derive_stronghold_password_hash("super-secret", &temp_dir.join("salt.txt"));
+
+        assert!(result.is_ok());
+        assert!(temp_dir.join("salt.txt").is_file());
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn refuses_to_regenerate_salt_when_metadata_db_contains_wallet_accounts() {
+        let temp_dir = unique_temp_dir("wallet-accounts-existing");
+        fs::create_dir_all(&temp_dir).unwrap();
+        let metadata_db_path = temp_dir.join("wallet-meta.sqlite3");
+        let connection = Connection::open(&metadata_db_path).unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE wallet_accounts (
+                  account_id TEXT NOT NULL
+                );
+                INSERT INTO wallet_accounts (account_id) VALUES ('account-1');
+                "#,
+            )
+            .unwrap();
+
+        let result = derive_stronghold_password_hash("super-secret", &temp_dir.join("salt.txt"));
+
+        assert!(matches!(result, Err(WalletError::StrongholdSaltMissing)));
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn accepts_snapshot_paths_inside_the_managed_directory() {
+        let temp_dir = unique_temp_dir("snapshot-path-ok");
+        let managed_dir = temp_dir.join("wallet-data");
+        fs::create_dir_all(&managed_dir).unwrap();
+        let snapshot_path = managed_dir.join("account-1.stronghold");
+
+        let result = validate_snapshot_path_in_directory(&snapshot_path, &managed_dir);
+
+        assert_eq!(result.unwrap(), snapshot_path);
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn rejects_snapshot_paths_outside_the_managed_directory() {
+        let temp_dir = unique_temp_dir("snapshot-path-outside");
+        let managed_dir = temp_dir.join("wallet-data");
+        let outside_dir = temp_dir.join("outside");
+        fs::create_dir_all(&managed_dir).unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        let snapshot_path = outside_dir.join("account-1.stronghold");
+
+        let result = validate_snapshot_path_in_directory(&snapshot_path, &managed_dir);
+
+        assert!(matches!(result, Err(WalletError::MetadataCorrupted(_))));
 
         let _ = fs::remove_dir_all(temp_dir);
     }

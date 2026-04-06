@@ -508,6 +508,19 @@ export const useWalletStore = defineStore("wallet", () => {
     addressBook.value = addressBook.value.filter((entry) => entry.id !== entryId);
   }
 
+  function removeNetworkScopedData(networkId: string) {
+    trackedTokens.value = trackedTokens.value.filter(
+      (token) => token.source !== "custom" || !token.networkIds.includes(networkId),
+    );
+
+    const nextActivity = recentActivity.value.filter(
+      (item) => item.id !== "empty-state" && item.networkId !== networkId,
+    );
+    recentActivity.value = nextActivity.length > 0 ? nextActivity : defaultActivity;
+
+    addressBook.value = addressBook.value.filter((entry) => entry.networkId !== networkId);
+  }
+
   function markAddressBookEntryUsed(options: {
     networkId: string;
     address: string;
@@ -621,6 +634,7 @@ export const useWalletStore = defineStore("wallet", () => {
     recentActivity,
     removeAddressBookEntry,
     removeCustomToken,
+    removeNetworkScopedData,
     resolveAddressBookLabel,
     syncActivityStatus,
     trackedTokenCount,

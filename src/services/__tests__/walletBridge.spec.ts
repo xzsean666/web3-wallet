@@ -200,4 +200,239 @@ describe("walletBridge", () => {
       },
     });
   });
+
+  describe("preview helpers", () => {
+    it("exposes pending drafts and cancels them", async () => {
+      const walletBridge = await loadWalletBridge();
+
+      const pending = await walletBridge.createWallet({
+        walletLabel: "Cancel Flow",
+        password: "super-secret",
+        isBiometricEnabled: false,
+      });
+
+      const draft = await walletBridge.loadPendingWalletDraft();
+      expect(draft?.accountId).toBe(pending.draft.accountId);
+
+      await walletBridge.cancelPendingWallet();
+      await expect(walletBridge.loadPendingWalletDraft()).resolves.toBeNull();
+    });
+
+    it("returns the active profile after finalizing a preview wallet", async () => {
+      const walletBridge = await loadWalletBridge();
+
+      const pending = await walletBridge.createWallet({
+        walletLabel: "Finalize Flow",
+        password: "super-secret",
+        isBiometricEnabled: true,
+      });
+      await walletBridge.getPendingBackupPhrase(pending.backupAccessToken);
+
+      const profile = await walletBridge.finalizePendingWallet({
+        backupAccessToken: pending.backupAccessToken,
+        confirmedBackup: true,
+      });
+
+      const activeProfile = await walletBridge.loadWalletProfile();
+      expect(activeProfile?.accountId).toBe(profile.accountId);
+    });
+
+    it("supports unlocking, switching, biometric toggles and renaming", async () => {
+      const walletBridge = await loadWalletBridge();
+      const first = await walletBridge.importWallet({
+        walletLabel: "First",
+        password: "super-secret",
+        isBiometricEnabled: false,
+        secretKind: "mnemonic",
+        secretValue: "test test test test test test test test test test test junk",
+      });
+      const second = await walletBridge.importWallet({
+        walletLabel: "Second",
+        password: "super-secret",
+        isBiometricEnabled: false,
+        secretKind: "privateKey",
+        secretValue: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      });
+
+      await expect(
+        walletBridge.unlockWallet({ accountId: first.accountId, password: "wrong" }),
+      ).resolves.toBeNull();
+
+      const unlocked = await walletBridge.unlockWallet({
+        accountId: first.accountId,
+        password: "super-secret",
+      });
+      expect(unlocked?.accountId).toBe(first.accountId);
+
+      const switched = await walletBridge.setActiveWallet({ accountId: second.accountId });
+      expect(switched?.accountId).toBe(second.accountId);
+
+      const biometrics = await walletBridge.updateBiometricSetting({
+        accountId: second.accountId,
+        isBiometricEnabled: true,
+      });
+      expect(biometrics?.isBiometricEnabled).toBe(true);
+
+      const renamed = await walletBridge.renameWalletAccount({
+        accountId: second.accountId,
+        walletLabel: "Renamed",
+      });
+      expect(renamed?.walletLabel).toBe("Renamed");
+
+      await expect(
+        walletBridge.renameWalletAccount({
+          accountId: second.accountId,
+          walletLabel: "   ",
+        }),
+      ).rejects.toThrow("钱包名称不能为空");
+    });
+
+    it("rejects signTransferTransaction in preview", async () => {
+      const walletBridge = await loadWalletBridge();
+      const profile = await walletBridge.importWallet({
+        walletLabel: "Signer",
+        password: "super-secret",
+        isBiometricEnabled: false,
+        secretKind: "privateKey",
+        secretValue: "0xbbbb000000000000000000000000000000000000000000000000000000000000",
+      });
+
+      await expect(
+        walletBridge.signTransferTransaction({
+          accountId: profile.accountId,
+          password: "super-secret",
+          chainId: "1",
+          nonce: "0",
+          amount: "0",
+          maxPriorityFeePerGasWei: "1",
+          maxFeePerGasWei: "1",
+          gasLimit: "21000",
+          recipientAddress: "0x1111111111111111111111111111111111111111",
+          feeMode: "eip1559",
+          asset: {
+            type: "native",
+          },
+        }),
+      ).rejects.toThrow("浏览器预览模式不支持真实签名与广播，请使用 pnpm tauri dev");
+    });
+
+    it("falls back to timestamp/random fallback when crypto is missing", async () => {
+      const walletBridge = await loadWalletBridge();
+      const originalCrypto = globalThis.crypto;
+      vi.stubGlobal("crypto", {
+        subtle: originalCrypto?.subtle,
+      } as Crypto);
+      try {
+        const session = await walletBridge.createWallet({
+          walletLabel: "Fallback",
+          password: "super-secret",
+          isBiometricEnabled: false,
+        });
+
+        expect(session.backupAccessToken).toMatch(/^[0-9a-f]+(-[0-9a-f]+)?$/);
+      } finally {
+        vi.stubGlobal("crypto", originalCrypto);
+      }
+    });
+  });
+
+  describe("tauri commands", () => {
+    beforeEach(() => {
+      isTauriMock.mockReturnValue(true);
+    });
+
+    it("invokes cancelPendingWallet via invoke", async () => {
+      const walletBridge = await loadWalletBridge();
+      await walletBridge.cancelPendingWallet();
+      expect(invokeMock).toHaveBeenCalledWith("cancel_pending_wallet");
+    });
+
+    it("delegates loadPendingWalletDraft and loadWalletProfile to invoke", async () => {
+      const walletBridge = await loadWalletBridge();
+      invokeMock.mockResolvedValueOnce({ accountId: "id" });
+
+      const draft = await walletBridge.loadPendingWalletDraft();
+      expect(draft?.accountId).toBe("id");
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "load_pending_wallet_draft");
+
+      const sessionSnapshot = {
+        accounts: [{ accountId: "profile-1" }],
+        activeAccountId: "profile-1",
+      };
+      invokeMock.mockResolvedValueOnce(sessionSnapshot);
+      const profile = await walletBridge.loadWalletProfile();
+      expect(profile?.accountId).toBe("profile-1");
+      expect(invokeMock).toHaveBeenNthCalledWith(2, "load_wallet_session");
+    });
+
+    it("passes unlock/setActive/updateBiometric/rename payloads to invoke", async () => {
+      const walletBridge = await loadWalletBridge();
+      invokeMock
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ accountId: "active" })
+        .mockResolvedValueOnce({ accountId: "bio" })
+        .mockResolvedValueOnce({ accountId: "renamed" });
+
+      await walletBridge.unlockWallet({
+        accountId: "active",
+        password: "pw",
+      });
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "unlock_wallet", {
+        request: { accountId: "active", password: "pw" },
+      });
+
+      await walletBridge.setActiveWallet({ accountId: "active" });
+      expect(invokeMock).toHaveBeenNthCalledWith(2, "set_active_wallet", {
+        request: { accountId: "active" },
+      });
+
+      await walletBridge.updateBiometricSetting({
+        accountId: "active",
+        isBiometricEnabled: true,
+      });
+      expect(invokeMock).toHaveBeenNthCalledWith(3, "update_biometric_setting", {
+        request: { accountId: "active", isBiometricEnabled: true },
+      });
+
+      await walletBridge.renameWalletAccount({
+        accountId: "renamed",
+        walletLabel: "new",
+      });
+      expect(invokeMock).toHaveBeenNthCalledWith(4, "rename_wallet_account", {
+        request: { accountId: "renamed", walletLabel: "new" },
+      });
+    });
+
+    it("sends signTransferTransaction payload to invoke", async () => {
+      const walletBridge = await loadWalletBridge();
+      invokeMock.mockResolvedValue({
+        rawTransaction: "0x00",
+        txHash: "0x01",
+      });
+
+      const payload = await walletBridge.signTransferTransaction({
+        accountId: "account",
+        password: "pw",
+        chainId: "1",
+        nonce: "0",
+        amount: "1",
+        maxPriorityFeePerGasWei: "1",
+        maxFeePerGasWei: "2",
+        gasLimit: "21000",
+        recipientAddress: "0x1111111111111111111111111111111111111111",
+        feeMode: "eip1559",
+        asset: {
+          type: "native",
+        },
+      });
+
+      expect(invokeMock).toHaveBeenLastCalledWith("sign_transfer_transaction", {
+        request: expect.any(Object),
+      });
+      expect(payload).toEqual({
+        rawTransaction: "0x00",
+        txHash: "0x01",
+      });
+    });
+  });
 });

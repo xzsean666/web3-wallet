@@ -22,7 +22,9 @@ const formErrors = ref<string[]>([]);
 const feedback = ref<null | { tone: "success" | "error"; message: string }>(null);
 
 const contacts = computed(() => walletStore.contactsForNetwork(activeNetwork.value.id));
-const newestContactTimestamp = computed(() => contacts.value[0]?.updatedAt ?? null);
+const newestContactTimestamp = computed(
+  () => contacts.value[0]?.lastUsedAt ?? contacts.value[0]?.updatedAt ?? null,
+);
 const activeNetworkContactCount = computed(() => contacts.value.length);
 const currentDraftMatch = computed(() =>
   walletStore.findAddressBookEntry(activeNetwork.value.id, contactAddress.value),

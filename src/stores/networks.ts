@@ -1,7 +1,12 @@
 import { computed, ref, watch } from "vue";
 import { defineStore } from "pinia";
-import { loadPersistedUiState, patchPersistedUiState } from "../services/uiState";
+import {
+  clearNetworkScopedUiState,
+  loadPersistedUiState,
+  patchPersistedUiState,
+} from "../services/uiState";
 import type { NetworkConfig, NetworkDraft } from "../types/network";
+import { useWalletStore } from "./wallet";
 
 const presetNetworks: NetworkConfig[] = [
   {
@@ -87,6 +92,7 @@ function hydrateCustomNetworks(value: unknown) {
 }
 
 export const useNetworksStore = defineStore("networks", () => {
+  const walletStore = useWalletStore();
   const persistedState = loadPersistedUiState();
   const customNetworks = ref<NetworkConfig[]>(
     hydrateCustomNetworks(persistedState.customNetworks),
@@ -194,6 +200,8 @@ export const useNetworksStore = defineStore("networks", () => {
 
   function removeCustomNetwork(id: string) {
     customNetworks.value = customNetworks.value.filter((network) => network.id !== id);
+    clearNetworkScopedUiState(id);
+    walletStore.removeNetworkScopedData(id);
 
     if (activeNetworkId.value === id) {
       activeNetworkId.value = presetNetworks[0].id;

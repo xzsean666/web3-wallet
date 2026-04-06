@@ -80,7 +80,7 @@ onMounted(async () => {
           <li>不支持 NFT、Swap、WalletConnect</li>
           <li>不支持消息签名、Typed Data、任意合约交互</li>
           <li>浏览器预览模式不支持真实签名</li>
-          <li>最近活动仍以本地最近提交记录为主</li>
+          <li>Tauri 运行时会把非敏感状态写入本地 SQLite</li>
         </ul>
         <p v-if="loadError" class="helper-text helper-text--error">
           {{ loadError }}

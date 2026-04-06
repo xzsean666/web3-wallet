@@ -179,6 +179,37 @@ describe("session store", () => {
     expect(store.walletLabel).toBe("Imported Ops");
   });
 
+  it("surfaces bridge errors when unlocking fails for non-password reasons", async () => {
+    const store = useSessionStore();
+    const now = new Date().toISOString();
+    const profile = {
+      accountId: "account-2",
+      derivationGroupId: "account-2",
+      derivationIndex: 0,
+      walletLabel: "Imported Ops",
+      address: "0x2222222222222222222222222222222222222222" as const,
+      isBiometricEnabled: false,
+      source: "imported" as const,
+      secretKind: "privateKey" as const,
+      hasBackedUpMnemonic: false,
+      createdAt: now,
+      lastUnlockedAt: now,
+    };
+
+    store.applyWalletSession(
+      {
+        activeAccountId: "account-2",
+        accounts: [profile],
+      },
+      { unlocked: false },
+    );
+
+    unlockWalletMock.mockRejectedValueOnce(new Error("当前找不到要操作的账号"));
+
+    expect(await store.unlockWallet("super-secret")).toBe(false);
+    expect(store.lastUnlockError).toBe("当前找不到要操作的账号");
+  });
+
   it("keeps frontend and bridge state aligned when account switching returns null", async () => {
     const store = useSessionStore();
     const now = new Date().toISOString();

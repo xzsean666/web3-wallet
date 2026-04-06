@@ -87,7 +87,7 @@ const assetFilterOptions = [
 ];
 const activityEmptyStateMessage = computed(() => {
   if (!hasSubmittedActivity.value) {
-    return "当前还没有最近发送记录。发起一笔 Native 或 ERC20 转账后，这里会优先展示本地最近活动。";
+    return "当前还没有最近活动。发起一笔 Native 或 ERC20 转账后，这里会显示当前账户的最近活动记录。";
   }
 
   if (activityFilter.value === "network") {
@@ -620,7 +620,7 @@ watch([pendingActivities, allNetworks], () => {
         <p v-if="snapshot.error" class="helper-text helper-text--error">{{ snapshot.error }}</p>
       </SectionCard>
 
-      <SectionCard title="Recent Activity" description="当前展示最近提交的本地活动记录">
+      <SectionCard title="Recent Activity" description="当前展示这个账户的最近活动记录">
         <template #header>
           <button
             class="button button--ghost button--small"
@@ -723,7 +723,7 @@ watch([pendingActivities, allNetworks], () => {
         <ul class="bullet-list">
           <li>当前资产页已接入 Native Token 与 ERC20 余额拉取</li>
           <li>发送页已经接入本地签名与原始交易广播</li>
-          <li>最近活动当前仍以本地最近发送记录为主，不是完整链上历史</li>
+          <li>最近活动和地址簿等非敏感状态已接入本地持久化</li>
           <li>自定义网络管理页已经可点击流转</li>
         </ul>
       </SectionCard>

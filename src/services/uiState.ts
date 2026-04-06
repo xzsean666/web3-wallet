@@ -1,8 +1,10 @@
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { NetworkConfig } from "../types/network";
 import type { ActivityItem, AddressBookEntry, TrackedToken } from "../types/wallet";
 
 const UI_STATE_STORAGE_KEY = "web3-wallet/ui-state/v2";
 const LEGACY_UI_STATE_STORAGE_KEY = "web3-wallet/ui-state/v1";
+const TAURI_PENDING_STORAGE_KEY = "web3-wallet/ui-state/tauri-pending/v1";
 
 export interface PersistedUiState {
   customNetworks?: NetworkConfig[];
@@ -15,9 +17,20 @@ export interface WalletScopedUiState {
   addressBook?: AddressBookEntry[];
 }
 
-interface PersistedUiStateEnvelope {
+export interface PersistedUiStateEnvelope {
   global: PersistedUiState;
   walletScopes: Record<string, WalletScopedUiState>;
+}
+
+let cachedEnvelope: PersistedUiStateEnvelope | null = null;
+let persistQueue = Promise.resolve();
+let latestPersistRevision = 0;
+
+function emptyEnvelope(): PersistedUiStateEnvelope {
+  return {
+    global: {},
+    walletScopes: {},
+  };
 }
 
 function canUseStorage() {
@@ -75,10 +88,7 @@ function extractWalletScopedState(value: Record<string, unknown>): WalletScopedU
 
 function normalizeEnvelope(raw: Record<string, unknown> | null): PersistedUiStateEnvelope {
   if (!raw) {
-    return {
-      global: {},
-      walletScopes: {},
-    };
+    return emptyEnvelope();
   }
 
   const explicitGlobal = isPlainObject(raw.global)
@@ -113,7 +123,7 @@ function hasLegacyWalletScopedState(raw: Record<string, unknown> | null) {
   );
 }
 
-function writeEnvelope(envelope: PersistedUiStateEnvelope) {
+function writeEnvelopeToStorage(envelope: PersistedUiStateEnvelope) {
   if (!canUseStorage()) {
     return;
   }
@@ -126,14 +136,163 @@ function writeEnvelope(envelope: PersistedUiStateEnvelope) {
   }
 }
 
+function clearStorageEnvelope() {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(UI_STATE_STORAGE_KEY);
+    window.localStorage.removeItem(LEGACY_UI_STATE_STORAGE_KEY);
+  } catch {
+    // Ignore storage cleanup failures.
+  }
+}
+
+function markTauriPendingEnvelope() {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(TAURI_PENDING_STORAGE_KEY, "1");
+  } catch {
+    // Ignore marker write failures to keep the wallet usable.
+  }
+}
+
+function clearTauriPendingEnvelope() {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  try {
+    window.localStorage.removeItem(TAURI_PENDING_STORAGE_KEY);
+  } catch {
+    // Ignore marker cleanup failures.
+  }
+}
+
+function hasTauriPendingEnvelope() {
+  if (!canUseStorage()) {
+    return false;
+  }
+
+  try {
+    return window.localStorage.getItem(TAURI_PENDING_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function envelopeHasData(envelope: PersistedUiStateEnvelope) {
+  return (
+    envelope.global.activeNetworkId !== undefined ||
+    envelope.global.customNetworks !== undefined ||
+    Object.keys(envelope.walletScopes).length > 0
+  );
+}
+
+function walletScopedStateHasData(state: WalletScopedUiState) {
+  return Boolean(
+    state.customTokens?.length ||
+      state.recentActivity?.length ||
+      state.addressBook?.length,
+  );
+}
+
+function readCachedEnvelope() {
+  if (cachedEnvelope) {
+    return cachedEnvelope;
+  }
+
+  cachedEnvelope = normalizeEnvelope(readRawEnvelope());
+  return cachedEnvelope;
+}
+
+function queuePersistEnvelope(envelope: PersistedUiStateEnvelope) {
+  cachedEnvelope = envelope;
+
+  writeEnvelopeToStorage(envelope);
+
+  if (!isTauri()) {
+    return;
+  }
+
+  markTauriPendingEnvelope();
+  const revision = ++latestPersistRevision;
+  persistQueue = persistQueue.then(async () => {
+    try {
+      await invoke("save_ui_state", { state: envelope });
+
+      if (revision === latestPersistRevision) {
+        clearStorageEnvelope();
+        clearTauriPendingEnvelope();
+      }
+    } catch {
+      // Keep the local backup so the next bootstrap can recover the latest UI state.
+    }
+  });
+}
+
+export async function bootstrapUiState() {
+  const localEnvelope = normalizeEnvelope(readRawEnvelope());
+
+  if (!isTauri()) {
+    cachedEnvelope = localEnvelope;
+    return;
+  }
+
+  try {
+    const remoteEnvelope = normalizeEnvelope(
+      (await invoke<Record<string, unknown>>("load_ui_state")) ?? null,
+    );
+    const hasPendingLocalBackup = hasTauriPendingEnvelope();
+
+    if (hasPendingLocalBackup) {
+      cachedEnvelope = localEnvelope;
+
+      try {
+        await invoke("save_ui_state", { state: localEnvelope });
+        clearStorageEnvelope();
+        clearTauriPendingEnvelope();
+      } catch {
+        markTauriPendingEnvelope();
+      }
+
+      return;
+    }
+
+    if (!envelopeHasData(remoteEnvelope) && envelopeHasData(localEnvelope)) {
+      cachedEnvelope = localEnvelope;
+
+      try {
+        await invoke("save_ui_state", { state: localEnvelope });
+        clearStorageEnvelope();
+        clearTauriPendingEnvelope();
+      } catch {
+        markTauriPendingEnvelope();
+      }
+
+      return;
+    }
+
+    cachedEnvelope = remoteEnvelope;
+    clearStorageEnvelope();
+    clearTauriPendingEnvelope();
+  } catch {
+    cachedEnvelope = localEnvelope;
+  }
+}
+
 export function loadPersistedUiState(): PersistedUiState {
-  return normalizeEnvelope(readRawEnvelope()).global;
+  return readCachedEnvelope().global;
 }
 
 export function patchPersistedUiState(patch: Partial<PersistedUiState>) {
-  const envelope = normalizeEnvelope(readRawEnvelope());
+  const envelope = readCachedEnvelope();
 
-  writeEnvelope({
+  queuePersistEnvelope({
     ...envelope,
     global: {
       ...envelope.global,
@@ -147,14 +306,14 @@ export function loadWalletScopedUiState(accountId: string | null | undefined): W
     return {};
   }
 
-  const rawEnvelope = readRawEnvelope();
-  const envelope = normalizeEnvelope(rawEnvelope);
+  const envelope = readCachedEnvelope();
   const scopedState = envelope.walletScopes[accountId];
 
   if (scopedState) {
     return scopedState;
   }
 
+  const rawEnvelope = readRawEnvelope();
   if (Object.keys(envelope.walletScopes).length === 0 && hasLegacyWalletScopedState(rawEnvelope)) {
     return extractWalletScopedState(rawEnvelope!);
   }
@@ -170,9 +329,9 @@ export function patchWalletScopedUiState(
     return;
   }
 
-  const envelope = normalizeEnvelope(readRawEnvelope());
+  const envelope = readCachedEnvelope();
 
-  writeEnvelope({
+  queuePersistEnvelope({
     ...envelope,
     walletScopes: {
       ...envelope.walletScopes,
@@ -189,34 +348,89 @@ export function clearWalletScopedUiState(accountId: string | null | undefined) {
     return;
   }
 
-  const envelope = normalizeEnvelope(readRawEnvelope());
+  const envelope = readCachedEnvelope();
   const nextWalletScopes = { ...envelope.walletScopes };
   delete nextWalletScopes[accountId];
 
-  writeEnvelope({
+  queuePersistEnvelope({
     ...envelope,
     walletScopes: nextWalletScopes,
   });
 }
 
 export function clearAllWalletScopedUiState() {
-  const envelope = normalizeEnvelope(readRawEnvelope());
+  const envelope = readCachedEnvelope();
 
-  writeEnvelope({
+  queuePersistEnvelope({
     ...envelope,
     walletScopes: {},
   });
 }
 
-export function clearPersistedUiState() {
-  if (!canUseStorage()) {
+export function clearNetworkScopedUiState(networkId: string) {
+  const envelope = readCachedEnvelope();
+  let hasChanges = false;
+  const nextWalletScopes = Object.fromEntries(
+    Object.entries(envelope.walletScopes).flatMap(([accountId, scopedState]) => {
+      const nextScopedState: WalletScopedUiState = {
+        customTokens: scopedState.customTokens?.filter(
+          (token) => !token.networkIds.includes(networkId),
+        ),
+        recentActivity: scopedState.recentActivity?.filter(
+          (item) => item.networkId !== networkId,
+        ),
+        addressBook: scopedState.addressBook?.filter(
+          (entry) => entry.networkId !== networkId,
+        ),
+      };
+
+      if (
+        nextScopedState.customTokens?.length !== scopedState.customTokens?.length ||
+        nextScopedState.recentActivity?.length !== scopedState.recentActivity?.length ||
+        nextScopedState.addressBook?.length !== scopedState.addressBook?.length
+      ) {
+        hasChanges = true;
+      }
+
+      return walletScopedStateHasData(nextScopedState)
+        ? [[accountId, nextScopedState]]
+        : [];
+    }),
+  );
+
+  if (!hasChanges) {
     return;
   }
 
-  try {
-    window.localStorage.removeItem(UI_STATE_STORAGE_KEY);
-    window.localStorage.removeItem(LEGACY_UI_STATE_STORAGE_KEY);
-  } catch {
-    // Ignore storage cleanup failures.
+  queuePersistEnvelope({
+    ...envelope,
+    walletScopes: nextWalletScopes,
+  });
+}
+
+export function clearPersistedUiState() {
+  const nextEnvelope = emptyEnvelope();
+  cachedEnvelope = nextEnvelope;
+
+  if (!isTauri()) {
+    clearStorageEnvelope();
+    clearTauriPendingEnvelope();
+    return;
   }
+
+  writeEnvelopeToStorage(nextEnvelope);
+  markTauriPendingEnvelope();
+  const revision = ++latestPersistRevision;
+  persistQueue = persistQueue.then(async () => {
+    try {
+      await invoke("save_ui_state", { state: nextEnvelope });
+
+      if (revision === latestPersistRevision) {
+        clearStorageEnvelope();
+        clearTauriPendingEnvelope();
+      }
+    } catch {
+      // Keep the local empty backup so the next bootstrap can retry cleanup.
+    }
+  });
 }

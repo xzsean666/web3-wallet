@@ -430,7 +430,7 @@ async function removeTrackedToken() {
           </RouterLink>
         </div>
         <p v-else class="empty-state">
-          当前还没有和这个资产相关的最近提交记录。发起一笔转账后，这里会优先显示本地最近活动。
+          当前还没有和这个资产相关的最近活动。发起一笔转账后，这里会显示当前账户的相关活动记录。
         </p>
       </SectionCard>
 
@@ -485,7 +485,7 @@ async function removeTrackedToken() {
       </SectionCard>
     </section>
 
-    <section v-else class="page-grid page-grid--1">
+    <section v-if="!asset" class="page-grid page-grid--1">
       <SectionCard title="Token Missing" description="当前网络下找不到这个资产" tone="warning">
         <p class="helper-text helper-text--error">{{ pageError }}</p>
         <div class="form-actions">

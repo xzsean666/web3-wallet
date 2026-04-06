@@ -122,9 +122,13 @@ function syncActivityStatus() {
 }
 
 function scheduleNextPoll() {
+  schedulePoll(false);
+}
+
+function schedulePoll(force: boolean) {
   stopPolling();
 
-  if (details.value?.status !== "pending") {
+  if (!force && details.value?.status !== "pending") {
     return;
   }
 
@@ -144,6 +148,8 @@ async function loadTransactionDetails() {
 
   isLoading.value = true;
   loadError.value = "";
+  const shouldRetryPolling =
+    details.value?.status === "pending" || activityRecord.value?.status === "pending";
 
   try {
     details.value = await fetchTransactionDetails({
@@ -154,8 +160,11 @@ async function loadTransactionDetails() {
     syncActivityStatus();
     scheduleNextPoll();
   } catch (error) {
-    details.value = null;
     loadError.value = error instanceof Error ? error.message : "无法加载交易详情";
+
+    if (shouldRetryPolling) {
+      schedulePoll(true);
+    }
   } finally {
     isLoading.value = false;
   }

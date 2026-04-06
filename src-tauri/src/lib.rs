@@ -21,7 +21,7 @@ fn get_app_overview() -> AppOverview {
         runtime: "Tauri 2 + Vue 3 + TypeScript",
         security_policy: "Sensitive keys stay in Rust/Tauri Core; backup phrase access is scoped to the active onboarding session",
         storage_strategy:
-            "Stronghold for secrets, SQLite/WebView local storage for non-sensitive state",
+            "Stronghold for secrets, SQLite for Tauri runtime state, WebView local storage only for browser preview",
     }
 }
 
@@ -53,7 +53,9 @@ pub fn run() {
             wallet::load_pending_wallet_draft,
             wallet::load_wallet_profile,
             wallet::load_wallet_session,
+            wallet::load_ui_state,
             wallet::rename_wallet_account,
+            wallet::save_ui_state,
             wallet::set_active_wallet,
             wallet::sign_transfer_transaction,
             wallet::unlock_wallet,

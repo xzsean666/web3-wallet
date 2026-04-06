@@ -58,6 +58,11 @@ const validationStatusLabel = computed(() => {
 
   return "Unavailable";
 });
+const presetNetworks = computed(() =>
+  allNetworks.value.filter((network) => network.source === "preset"),
+);
+const presetNetworkCount = computed(() => presetNetworks.value.length);
+const customNetworkCount = computed(() => customNetworks.value.length);
 
 watch(draftKey, (nextKey) => {
   if (validatedDraftKey.value && validatedDraftKey.value !== nextKey) {
@@ -190,7 +195,7 @@ function removeNetwork(id: string) {
 
       <SectionCard title="Total Networks" description="预置 + 自定义">
         <p class="metric-value">{{ allNetworks.length }}</p>
-        <p>{{ customNetworks.length }} custom</p>
+        <p>{{ presetNetworkCount }} preset · {{ customNetworkCount }} custom</p>
       </SectionCard>
 
       <SectionCard title="Validation" description="当前表单校验状态" :tone="validationTone">
@@ -205,10 +210,14 @@ function removeNetwork(id: string) {
     </section>
 
     <section class="page-grid page-grid--2">
-      <SectionCard title="All Networks" description="预置网络 + 自定义网络">
+      <SectionCard
+        title="Preset Networks"
+        description="官方预置网络只读但可切换，保证用户始终有可信入口。"
+      >
+        <p class="metric-value">{{ presetNetworkCount }} preset</p>
         <div class="network-list">
           <div
-            v-for="network in allNetworks"
+            v-for="network in presetNetworks"
             :key="network.id"
             :class="['network-item', { 'network-item--active': activeNetwork.id === network.id }]"
           >
@@ -218,7 +227,6 @@ function removeNetwork(id: string) {
                 <div class="chip-row">
                   <span class="status-chip status-chip--accent">{{ network.symbol }}</span>
                   <span class="status-chip">{{ formatChainLabel(network.chainId) }}</span>
-                  <span class="status-chip">{{ network.source === "custom" ? "Custom" : "Preset" }}</span>
                 </div>
               </div>
               <p>{{ network.rpcUrl }}</p>
@@ -227,31 +235,59 @@ function removeNetwork(id: string) {
               <button
                 class="button button--ghost button--small"
                 type="button"
+                :disabled="activeNetwork.id === network.id"
                 @click="networksStore.setActiveNetwork(network.id)"
               >
-                使用
-              </button>
-              <button
-                v-if="network.source === 'custom'"
-                class="button button--ghost button--small"
-                type="button"
-                @click="startEdit(network)"
-              >
-                编辑
-              </button>
-              <button
-                v-if="network.source === 'custom'"
-                class="button button--danger button--small"
-                type="button"
-                @click="removeNetwork(network.id)"
-              >
-                删除
+                {{ activeNetwork.id === network.id ? "当前使用" : "切换到此网络" }}
               </button>
             </div>
           </div>
         </div>
       </SectionCard>
 
+      <SectionCard title="Custom Networks" description="自定义网络支持校验、编辑与删除">
+        <p class="metric-value">{{ customNetworkCount }} custom</p>
+        <div class="network-list">
+          <p v-if="customNetworks.length === 0" class="helper-text">
+            还没有自定义网络，保存后会自动添加到列表。
+          </p>
+          <div
+            v-for="network in customNetworks"
+            :key="network.id"
+            :class="['network-item', { 'network-item--active': activeNetwork.id === network.id }]"
+          >
+            <div class="network-item__body">
+              <div class="network-item__meta">
+                <strong>{{ network.name }}</strong>
+                <div class="chip-row">
+                  <span class="status-chip status-chip--accent">{{ network.symbol }}</span>
+                  <span class="status-chip">{{ formatChainLabel(network.chainId) }}</span>
+                </div>
+              </div>
+              <p>{{ network.rpcUrl }}</p>
+            </div>
+            <div class="inline-actions">
+              <button
+                class="button button--ghost button--small"
+                type="button"
+                :disabled="activeNetwork.id === network.id"
+                @click="networksStore.setActiveNetwork(network.id)"
+              >
+                {{ activeNetwork.id === network.id ? "当前使用" : "切换到此网络" }}
+              </button>
+              <button class="button button--ghost button--small" type="button" @click="startEdit(network)">
+                编辑
+              </button>
+              <button class="button button--danger button--small" type="button" @click="removeNetwork(network.id)">
+                删除
+              </button>
+            </div>
+          </div>
+        </div>
+      </SectionCard>
+    </section>
+
+    <section class="page-grid page-grid--2">
       <SectionCard
         :title="editingId ? 'Edit Custom Network' : 'Add Custom Network'"
         description="只接受 EVM 网络参数，保存前必须通过 RPC 校验"

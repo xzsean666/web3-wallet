@@ -19,6 +19,7 @@ import {
   parseUnits,
   RpcRequestError,
   TimeoutError,
+  TransactionReceiptNotFoundError,
   type Address,
   type Hash,
 } from "viem";
@@ -108,6 +109,20 @@ function normalizeRpcValidationError(error: unknown) {
   }
 
   return "RPC 节点当前不可用，无法完成链上校验";
+}
+
+function isPendingReceiptError(error: unknown) {
+  if (error instanceof TransactionReceiptNotFoundError) {
+    return true;
+  }
+
+  if (error instanceof BaseError) {
+    return Boolean(
+      error.walk((current) => current instanceof TransactionReceiptNotFoundError),
+    );
+  }
+
+  return false;
 }
 
 function formatBlockTimestamp(timestamp: bigint) {
@@ -865,9 +880,16 @@ export async function fetchTransactionDetails(options: {
   trackedTokens?: TrackedToken[];
 }): Promise<TransactionDetails> {
   const client = getPublicClient(options.network);
+  const receiptPromise = client.getTransactionReceipt({ hash: options.txHash }).catch((error) => {
+    if (isPendingReceiptError(error)) {
+      return null;
+    }
+
+    throw error;
+  });
   const [transaction, receipt] = await Promise.all([
     client.getTransaction({ hash: options.txHash }),
-    client.getTransactionReceipt({ hash: options.txHash }).catch(() => null),
+    receiptPromise,
   ]);
   const confirmedBlock =
     receipt?.blockNumber !== undefined

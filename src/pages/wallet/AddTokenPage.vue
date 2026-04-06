@@ -23,12 +23,17 @@ const formErrors = ref<string[]>([]);
 const metadataLookupError = ref("");
 const metadataLookupMessage = ref("");
 const isReadingMetadata = ref(false);
+const validatedMetadataKey = ref("");
 let metadataLookupRequestId = 0;
 
 const canReadMetadata = computed(() => isAddress(contractAddress.value.trim()));
+const currentMetadataKey = computed(() =>
+  canReadMetadata.value ? `${activeNetwork.value.id}:${contractAddress.value.trim().toLowerCase()}` : "",
+);
 
 watch([contractAddress, activeNetwork], () => {
   metadataLookupRequestId += 1;
+  validatedMetadataKey.value = "";
   metadataLookupError.value = "";
   metadataLookupMessage.value = "";
 });
@@ -49,6 +54,8 @@ async function readMetadataFromContract() {
   const requestId = ++metadataLookupRequestId;
   const requestNetwork = activeNetwork.value;
   const requestAddress = normalizedAddress;
+  const requestMetadataKey = `${requestNetwork.id}:${requestAddress.toLowerCase()}`;
+  validatedMetadataKey.value = "";
 
   try {
     const metadata = await readErc20TokenMetadata({
@@ -68,7 +75,9 @@ async function readMetadataFromContract() {
     name.value = metadata.name;
     symbol.value = metadata.symbol;
     decimals.value = String(metadata.decimals);
+    validatedMetadataKey.value = requestMetadataKey;
     metadataLookupMessage.value = "已从当前网络的合约读取 Token 元数据，你仍然可以手动修改。";
+    return true;
   } catch (error) {
     if (
       requestId !== metadataLookupRequestId ||
@@ -80,6 +89,7 @@ async function readMetadataFromContract() {
 
     metadataLookupError.value =
       error instanceof Error ? error.message : "当前无法从合约读取 ERC20 元数据";
+    return false;
   } finally {
     if (requestId === metadataLookupRequestId) {
       isReadingMetadata.value = false;
@@ -88,6 +98,15 @@ async function readMetadataFromContract() {
 }
 
 async function addToken() {
+  if (validatedMetadataKey.value !== currentMetadataKey.value) {
+    const didValidate = await readMetadataFromContract();
+
+    if (!didValidate) {
+      formErrors.value = ["保存前必须先通过 ERC20 合约元数据校验。"];
+      return;
+    }
+  }
+
   const result = walletStore.addCustomToken({
     networkId: activeNetwork.value.id,
     name: name.value,
@@ -172,7 +191,8 @@ async function addToken() {
         <ul class="bullet-list">
           <li>只允许当前激活网络下的 ERC20 Token</li>
           <li>必须输入合法 EVM 合约地址</li>
-          <li>可以先读取合约元数据，再手动调整表单</li>
+          <li>保存前必须成功读取 `name / symbol / decimals`</li>
+          <li>读取成功后仍然可以手动调整表单</li>
           <li>Symbol 长度不超过 10</li>
           <li>Decimals 只接受 0 到 36 的整数</li>
         </ul>
