@@ -40,7 +40,6 @@ pub fn run() {
 
             Ok(())
         })
-        .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_app_overview,
             wallet::cancel_pending_wallet,

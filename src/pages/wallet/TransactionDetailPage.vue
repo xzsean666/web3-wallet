@@ -7,6 +7,8 @@ import WalletChrome from "../../components/WalletChrome.vue";
 import { fetchTransactionDetails } from "../../services/evm";
 import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { useWalletStore } from "../../stores/wallet";
 import type { TransactionDetails } from "../../types/portfolio";
 import { formatActivityStatus, formatDateTime, formatTokenAmount } from "../../utils/format";
@@ -167,6 +169,15 @@ async function loadTransactionDetails() {
     }
   } finally {
     isLoading.value = false;
+  }
+}
+
+async function openExternal(url: string | null) {
+  if (!url) return;
+  if (isTauri()) {
+    await openUrl(url);
+  } else {
+    window.open(url, "_blank");
   }
 }
 
@@ -341,15 +352,14 @@ onBeforeUnmount(stopPolling);
           <button class="button button--ghost" type="button" @click="loadTransactionDetails">
             立即刷新
           </button>
-          <a
+          <button
             v-if="details.explorerUrl"
             class="button button--secondary"
-            :href="details.explorerUrl"
-            rel="noreferrer"
-            target="_blank"
+            type="button"
+            @click="openExternal(details.explorerUrl)"
           >
             打开区块浏览器
-          </a>
+          </button>
         </div>
       </SectionCard>
     </section>

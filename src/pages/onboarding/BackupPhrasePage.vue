@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
 import {
@@ -17,27 +17,49 @@ const confirmed = ref(false);
 const formError = ref("");
 const words = ref<string[]>([]);
 const backTarget = computed(() => (sessionStore.hasWallet ? "/settings/accounts" : "/welcome"));
+const missingBackupTarget = computed(() => (sessionStore.hasWallet ? "/wallet" : "/welcome"));
+
+async function ensureBackupAccess() {
+  if (!onboardingStore.hasPendingBackup) {
+    words.value = [];
+    await router.replace(missingBackupTarget.value);
+    return false;
+  }
+
+  if (sessionStore.hasWallet && !sessionStore.isUnlocked) {
+    words.value = [];
+    await router.replace("/unlock");
+    return false;
+  }
+
+  return true;
+}
+
+watch(
+  () => [onboardingStore.hasPendingBackup, sessionStore.hasWallet, sessionStore.isUnlocked] as const,
+  async () => {
+    await ensureBackupAccess();
+  },
+);
 
 onMounted(async () => {
-  if (!onboardingStore.hasPendingBackup) {
-    await router.replace("/welcome");
+  if (!(await ensureBackupAccess())) {
     return;
   }
 
   if (!onboardingStore.backupAccessToken) {
-    await cancelPendingWallet();
-    onboardingStore.clearDraft();
-    await router.replace(backTarget.value);
+    formError.value = "当前备份会话无法恢复，请取消本次流程后重新创建钱包。";
     return;
   }
 
   try {
     const phrase = await getPendingBackupPhrase(onboardingStore.backupAccessToken);
     words.value = phrase.trim().split(/\s+/);
-  } catch {
-    await cancelPendingWallet();
-    onboardingStore.clearDraft();
-    await router.replace("/welcome");
+  } catch (error) {
+    formError.value =
+      error instanceof Error
+        ? error.message
+        : "当前无法恢复备份会话，请取消本次流程后重新创建钱包。";
   }
 });
 
@@ -56,8 +78,9 @@ async function finalizeBackup() {
       backupAccessToken: onboardingStore.backupAccessToken,
       confirmedBackup: confirmed.value,
     });
+    const shouldRemainUnlocked = sessionStore.hasWallet ? sessionStore.isUnlocked : true;
     onboardingStore.clearDraft();
-    sessionStore.applyWalletProfile(profile, { unlocked: true });
+    sessionStore.applyWalletProfile(profile, { unlocked: shouldRemainUnlocked });
     await router.replace("/wallet");
   } catch (error) {
     formError.value =

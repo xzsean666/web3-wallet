@@ -28,6 +28,12 @@ const backTarget = computed(() => (isAddAccountMode.value ? "/settings/accounts"
 async function submitImport() {
   formError.value = "";
 
+  if (onboardingStore.hasPendingDraft) {
+    formError.value = "当前有一笔待完成的备份流程，请先完成或取消后再继续。";
+    await router.push("/onboarding/backup");
+    return;
+  }
+
   if (!walletLabel.value.trim()) {
     formError.value = "钱包名称不能为空";
     return;
@@ -60,7 +66,9 @@ async function submitImport() {
     });
 
     onboardingStore.clearDraft();
-    sessionStore.applyWalletProfile(profile, { unlocked: true });
+    sessionStore.applyWalletProfile(profile, {
+      unlocked: sessionStore.hasWallet ? sessionStore.isUnlocked : true,
+    });
     secretValue.value = "";
     password.value = "";
     confirmPassword.value = "";

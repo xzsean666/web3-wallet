@@ -25,6 +25,12 @@ const backTarget = computed(() => (isAddAccountMode.value ? "/settings/accounts"
 async function submitCreateWallet() {
   formError.value = "";
 
+  if (onboardingStore.hasPendingDraft) {
+    formError.value = "当前有一笔待完成的备份流程，请先完成或取消后再继续。";
+    await router.push("/onboarding/backup");
+    return;
+  }
+
   if (!walletLabel.value.trim()) {
     formError.value = "钱包名称不能为空";
     return;

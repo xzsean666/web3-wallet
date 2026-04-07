@@ -56,6 +56,23 @@ describe("networks store", () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
+  it("ships preset test networks and lets the user switch to them", () => {
+    const store = useNetworksStore();
+
+    expect(store.allNetworks.map((network) => network.id)).toEqual(
+      expect.arrayContaining(["base-sepolia", "op-sepolia", "bsc-testnet", "opbnb-testnet"]),
+    );
+
+    store.setActiveNetwork("bsc-testnet");
+
+    expect(store.activeNetworkId).toBe("bsc-testnet");
+    expect(store.activeNetwork).toMatchObject({
+      name: "BSC Testnet",
+      chainId: 97,
+      symbol: "tBNB",
+    });
+  });
+
   it("adds and removes a custom network", () => {
     const store = useNetworksStore();
 

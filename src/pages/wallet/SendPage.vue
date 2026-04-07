@@ -16,6 +16,7 @@ import { useNetworksStore } from "../../stores/networks";
 import { usePortfolioStore } from "../../stores/portfolio";
 import { useSessionStore } from "../../stores/session";
 import { useWalletStore } from "../../stores/wallet";
+import type { NetworkConfig } from "../../types/network";
 import type { TransferErrorFeedback, TransferPreview } from "../../types/portfolio";
 import type { AddressBookEntry, WalletAddress, WalletHex } from "../../types/wallet";
 import { formatDateTime, formatRelativeTime, formatTokenAmount, shortenAddress } from "../../utils/format";
@@ -57,6 +58,7 @@ const contactFeedback = ref<null | {
   message: string;
 }>(null);
 type TransferConfirmation = {
+  requestId: number;
   accountId: string;
   accountAddress: WalletAddress;
   assetId: string;
@@ -65,6 +67,7 @@ type TransferConfirmation = {
   assetType: "native" | "erc20";
   chainId: number;
   networkId: string;
+  network: NetworkConfig;
   recipientAddress: string;
   amount: string;
   networkName: string;
@@ -74,6 +77,32 @@ type TransferConfirmation = {
 };
 
 const confirmation = ref<TransferConfirmation | null>(null);
+
+function buildExpiredConfirmationFeedback(): TransferErrorFeedback {
+  return {
+    stage: "sign",
+    category: "signing",
+    title: "确认摘要已过期",
+    message: "当前发送表单、账号或网络已经变化，请重新生成确认摘要后再继续签名。",
+    hints: ["确认资产、收款地址、金额、账号与网络后，重新点击“生成确认摘要”"],
+  };
+}
+
+function isConfirmationContextCurrent(nextConfirmation: TransferConfirmation) {
+  return (
+    activeAccountId.value === nextConfirmation.accountId &&
+    Boolean(primaryAddress.value) &&
+    primaryAddress.value!.toLowerCase() === nextConfirmation.accountAddress.toLowerCase() &&
+    activeNetwork.value.id === nextConfirmation.networkId
+  );
+}
+
+function isConfirmationCurrent(nextConfirmation: TransferConfirmation) {
+  return (
+    nextConfirmation.requestId === confirmationRequestId &&
+    isConfirmationContextCurrent(nextConfirmation)
+  );
+}
 
 const activeTokens = computed(() => walletStore.tokensForNetwork(activeNetwork.value.id));
 const snapshot = computed(() =>
@@ -806,6 +835,7 @@ async function buildConfirmation() {
 
   isEstimating.value = true;
   const nextConfirmation = {
+    requestId,
     accountId: requestAccountId,
     accountAddress: requestAccountAddress,
     assetId: requestSelectedAsset.id,
@@ -814,6 +844,7 @@ async function buildConfirmation() {
     assetType: requestSelectedAsset.type,
     chainId: requestNetwork.chainId,
     networkId: requestNetwork.id,
+    network: { ...requestNetwork },
     recipientAddress: requestRecipientAddress,
     amount: requestAmount,
     networkName: requestNetwork.name,
@@ -885,19 +916,8 @@ async function signAndBroadcast() {
     return;
   }
 
-  if (
-    activeAccountId.value !== nextConfirmation.accountId ||
-    !primaryAddress.value ||
-    primaryAddress.value.toLowerCase() !== nextConfirmation.accountAddress.toLowerCase() ||
-    activeNetwork.value.id !== nextConfirmation.networkId
-  ) {
-    transferFeedback.value = {
-      stage: "sign",
-      category: "signing",
-      title: "确认摘要已过期",
-      message: "当前账号或网络已经变化，请重新生成确认摘要后再继续签名。",
-      hints: ["确认当前账号与网络后，重新点击“生成确认摘要”"],
-    };
+  if (!isConfirmationCurrent(nextConfirmation)) {
+    transferFeedback.value = buildExpiredConfirmationFeedback();
     return;
   }
 
@@ -971,11 +991,17 @@ async function signAndBroadcast() {
       return;
     }
 
+    if (!isConfirmationCurrent(nextConfirmation)) {
+      confirmation.value = nextConfirmation;
+      transferFeedback.value = buildExpiredConfirmationFeedback();
+      return;
+    }
+
     let broadcastHash;
 
     try {
       broadcastHash = await broadcastSignedTransaction({
-        network: activeNetwork.value,
+        network: nextConfirmation.network,
         rawTransaction: signedPayload.rawTransaction,
       });
     } catch (error) {
@@ -1037,7 +1063,7 @@ async function signAndBroadcast() {
         <form class="form-grid" @submit.prevent="buildConfirmation">
           <label class="field">
             <span>资产</span>
-            <select v-model="selectedAssetId">
+            <select v-model="selectedAssetId" :disabled="isBroadcasting">
               <option v-for="asset in assetOptions" :key="asset.id" :value="asset.id">
                 {{ asset.label }}
               </option>
@@ -1076,7 +1102,7 @@ async function signAndBroadcast() {
             <button
               class="button button--secondary button--small"
               type="button"
-              :disabled="isFillingMax || isRefreshingBalance"
+              :disabled="isFillingMax || isRefreshingBalance || isBroadcasting"
               @click="fillMaxAmount"
             >
               {{ isFillingMax ? "计算 Max..." : "Max" }}
@@ -1099,12 +1125,18 @@ async function signAndBroadcast() {
             <input
               v-model="recipientAddress"
               autocomplete="off"
+              :disabled="isBroadcasting"
               placeholder="0x..."
             />
           </label>
 
           <div class="form-actions form-actions--compact">
-            <button class="button button--ghost button--small" type="button" @click="pasteRecipientAddress">
+            <button
+              class="button button--ghost button--small"
+              type="button"
+              :disabled="isBroadcasting"
+              @click="pasteRecipientAddress"
+            >
               粘贴地址
             </button>
             <span
@@ -1130,6 +1162,7 @@ async function signAndBroadcast() {
               :key="entry.id"
               class="token-row token-row--selectable"
               type="button"
+              :disabled="isBroadcasting"
               @click="useSavedContact(entry)"
             >
               <div class="token-row__content">
@@ -1202,6 +1235,7 @@ async function signAndBroadcast() {
               :key="entry.address"
               class="token-row token-row--selectable"
               type="button"
+              :disabled="isBroadcasting"
               @click="useRecentRecipient(entry)"
             >
               <div class="token-row__content">
@@ -1218,7 +1252,12 @@ async function signAndBroadcast() {
 
           <label class="field">
             <span>数量</span>
-            <input v-model="amount" inputmode="decimal" placeholder="0.00" />
+            <input
+              v-model="amount"
+              :disabled="isBroadcasting"
+              inputmode="decimal"
+              placeholder="0.00"
+            />
           </label>
 
           <p
@@ -1236,7 +1275,7 @@ async function signAndBroadcast() {
           </ul>
 
           <div class="form-actions">
-            <button class="button button--primary" type="submit" :disabled="isEstimating">
+            <button class="button button--primary" type="submit" :disabled="isEstimating || isBroadcasting">
               {{ isEstimating ? "正在估算..." : "生成确认摘要" }}
             </button>
           </div>
@@ -1323,12 +1362,17 @@ async function signAndBroadcast() {
           <button
             class="button button--primary"
             type="button"
-            :disabled="isBroadcasting"
+            :disabled="isBroadcasting || (confirmation ? !isConfirmationCurrent(confirmation) : true)"
             @click="signAndBroadcast"
           >
             {{ isBroadcasting ? "正在签名并广播..." : "签名并广播" }}
           </button>
-          <button class="button button--ghost" type="button" @click="buildConfirmation">
+          <button
+            class="button button--ghost"
+            type="button"
+            :disabled="isBroadcasting || isEstimating"
+            @click="buildConfirmation"
+          >
             重新估算
           </button>
         </div>

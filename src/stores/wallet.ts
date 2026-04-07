@@ -1,6 +1,6 @@
 import { computed, ref, watch } from "vue";
 import { defineStore, storeToRefs } from "pinia";
-import { isAddress } from "viem";
+import { isAddress, getAddress } from "viem";
 import { loadWalletScopedUiState, patchWalletScopedUiState } from "../services/uiState";
 import { useSessionStore } from "./session";
 import { formatTokenAmount, shortenAddress } from "../utils/format";
@@ -20,7 +20,7 @@ const defaultTrackedTokens: TrackedToken[] = [
     name: "USD Coin",
     balance: "0.00",
     decimals: 6,
-    contractAddress: "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    contractAddress: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
     networkIds: ["ethereum"],
     source: "preset",
   },
@@ -40,7 +40,7 @@ const defaultTrackedTokens: TrackedToken[] = [
     name: "USD Coin",
     balance: "0.00",
     decimals: 6,
-    contractAddress: "0x0b2c639c533813f4aa9d7837caf62653d097ff85",
+    contractAddress: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
     networkIds: ["optimism"],
     source: "preset",
   },
@@ -328,7 +328,7 @@ export const useWalletStore = defineStore("wallet", () => {
 
   function validateTokenDraft(draft: TokenDraft) {
     const errors: string[] = [];
-    const normalizedAddress = draft.contractAddress.trim();
+    let normalizedAddress = draft.contractAddress.trim();
     const decimalsValue = Number(draft.decimals.trim());
 
     if (!draft.name.trim()) {
@@ -339,7 +339,9 @@ export const useWalletStore = defineStore("wallet", () => {
       errors.push("Token Symbol 不能为空，且长度不能超过 10 个字符");
     }
 
-    if (!isAddress(normalizedAddress)) {
+    try {
+      normalizedAddress = getAddress(normalizedAddress);
+    } catch {
       errors.push("合约地址必须是合法的 EVM 地址");
     }
 
@@ -367,7 +369,7 @@ export const useWalletStore = defineStore("wallet", () => {
   function validateAddressBookDraft(draft: AddressBookDraft) {
     const errors: string[] = [];
     const normalizedLabel = draft.label.trim();
-    const normalizedAddress = draft.address.trim();
+    let normalizedAddress = draft.address.trim();
     const normalizedNote = draft.note.trim();
 
     if (!normalizedLabel) {
@@ -376,7 +378,9 @@ export const useWalletStore = defineStore("wallet", () => {
       errors.push("联系人名称不能超过 24 个字符");
     }
 
-    if (!isAddress(normalizedAddress)) {
+    try {
+      normalizedAddress = getAddress(normalizedAddress);
+    } catch {
       errors.push("联系人地址必须是合法的 EVM 地址");
     }
 

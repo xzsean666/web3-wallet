@@ -1,6 +1,13 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { english, generateMnemonic, mnemonicToAccount, privateKeyToAccount } from "viem/accounts";
-import { hashSecret } from "../utils/security";
+import {
+  createPasswordVerifier,
+  decryptSecret,
+  encryptSecret,
+  verifyPassword,
+  type EncryptedSecretPayload,
+  type PasswordVerifier,
+} from "../utils/security";
 import type {
   DeleteWalletAccountRequest,
   FinalizePendingWalletRequest,
@@ -53,29 +60,37 @@ interface DeriveMnemonicAccountRequest {
 interface PreviewPendingState {
   draft: PendingWalletDraft;
   mnemonic: string;
-  passwordHash: string;
+  encryptedMnemonic: EncryptedSecretPayload;
+  passwordVerifier: PasswordVerifier;
   backupAccessToken: string;
   hasRevealedBackupPhrase: boolean;
 }
 
 interface PreviewState {
   pending: PreviewPendingState | null;
-  passwordHashes: Record<string, string>;
-  mnemonicSecrets: Record<string, string>;
+  passwordVerifiers: Record<string, PasswordVerifier>;
+  encryptedMnemonicSecrets: Record<string, EncryptedSecretPayload>;
   accounts: WalletProfile[];
   activeAccountId: string | null;
 }
 
 const previewState: PreviewState = {
   pending: null,
-  passwordHashes: {},
-  mnemonicSecrets: {},
+  passwordVerifiers: {},
+  encryptedMnemonicSecrets: {},
   accounts: [],
   activeAccountId: null,
 };
+const PENDING_ONBOARDING_ERROR = "当前有一笔待完成的备份流程，请先完成或取消后再继续。";
 
 export function isTauriWalletRuntime() {
   return isTauri();
+}
+
+function ensureNoPendingPreviewOnboarding() {
+  if (previewState.pending) {
+    throw new Error(PENDING_ONBOARDING_ERROR);
+  }
 }
 
 export async function createWallet(request: CreateWalletRequest) {
@@ -83,9 +98,12 @@ export async function createWallet(request: CreateWalletRequest) {
     return invoke<PendingWalletSession>("create_wallet", { request });
   }
 
+  ensureNoPendingPreviewOnboarding();
   const mnemonic = generateMnemonic(english);
   const account = mnemonicToAccount(mnemonic);
-  const passwordHash = await hashSecret(request.password);
+  const normalizedMnemonic = normalizeMnemonicPhrase(mnemonic);
+  const passwordVerifier = await createPasswordVerifier(request.password);
+  const encryptedMnemonic = await encryptSecret(normalizedMnemonic, request.password);
   const backupAccessToken = generateBackupAccessToken();
   const draft: PendingWalletDraft = {
     accountId: buildAccountId(account.address),
@@ -100,8 +118,9 @@ export async function createWallet(request: CreateWalletRequest) {
 
   previewState.pending = {
     draft,
-    mnemonic,
-    passwordHash,
+    mnemonic: normalizedMnemonic,
+    encryptedMnemonic,
+    passwordVerifier,
     backupAccessToken,
     hasRevealedBackupPhrase: false,
   };
@@ -175,8 +194,8 @@ export async function finalizePendingWallet(request: FinalizePendingWalletReques
   };
 
   upsertPreviewAccount(nextWallet);
-  previewState.passwordHashes[nextWallet.accountId] = previewState.pending.passwordHash;
-  previewState.mnemonicSecrets[nextWallet.accountId] = normalizeMnemonicPhrase(previewState.pending.mnemonic);
+  previewState.passwordVerifiers[nextWallet.accountId] = previewState.pending.passwordVerifier;
+  previewState.encryptedMnemonicSecrets[nextWallet.accountId] = previewState.pending.encryptedMnemonic;
   previewState.activeAccountId = nextWallet.accountId;
   previewState.pending = null;
 
@@ -188,6 +207,7 @@ export async function importWallet(request: ImportWalletRequest) {
     return invoke<WalletProfile>("import_wallet", { request });
   }
 
+  ensureNoPendingPreviewOnboarding();
   const account =
     request.secretKind === "mnemonic"
       ? mnemonicToAccount(normalizeMnemonicPhrase(request.secretValue))
@@ -208,11 +228,12 @@ export async function importWallet(request: ImportWalletRequest) {
     createdAt: new Date().toISOString(),
     lastUnlockedAt: new Date().toISOString(),
   };
-
-  previewState.pending = null;
-  previewState.passwordHashes[profile.accountId] = await hashSecret(request.password);
+  previewState.passwordVerifiers[profile.accountId] = await createPasswordVerifier(request.password);
   if (request.secretKind === "mnemonic") {
-    previewState.mnemonicSecrets[profile.accountId] = normalizeMnemonicPhrase(request.secretValue);
+    previewState.encryptedMnemonicSecrets[profile.accountId] = await encryptSecret(
+      normalizeMnemonicPhrase(request.secretValue),
+      request.password,
+    );
   }
   upsertPreviewAccount(profile);
   previewState.activeAccountId = profile.accountId;
@@ -235,20 +256,23 @@ export async function deriveMnemonicAccount(request: DeriveMnemonicAccountReques
     throw new Error("只有助记词账号支持派生新地址");
   }
 
-  const storedHash = previewState.passwordHashes[sourceAccount.accountId];
-  const mnemonic = previewState.mnemonicSecrets[sourceAccount.accountId];
+  const storedVerifier = previewState.passwordVerifiers[sourceAccount.accountId];
+  const encryptedMnemonic = previewState.encryptedMnemonicSecrets[sourceAccount.accountId];
 
-  if (!storedHash || !mnemonic) {
+  if (!storedVerifier || !encryptedMnemonic) {
     throw new Error("当前助记词账号缺少可派生的本地恢复材料");
   }
 
-  const nextHash = await hashSecret(request.password);
+  const verifiedPassword = await verifyPassword(request.password, storedVerifier);
 
-  if (nextHash !== storedHash) {
+  if (!verifiedPassword) {
     throw new Error("钱包密码不正确，无法继续派生地址");
   }
 
-  const nextDerivationIndex = getNextPreviewMnemonicDerivationIndex(mnemonic);
+  const mnemonic = await decryptSecret(encryptedMnemonic, request.password);
+  const nextDerivationIndex = getNextPreviewMnemonicDerivationIndex(
+    sourceAccount.derivationGroupId,
+  );
   const nextAccount = mnemonicToAccount(mnemonic, {
     addressIndex: nextDerivationIndex,
   });
@@ -270,8 +294,8 @@ export async function deriveMnemonicAccount(request: DeriveMnemonicAccountReques
   };
 
   upsertPreviewAccount(nextProfile);
-  previewState.passwordHashes[nextProfile.accountId] = storedHash;
-  previewState.mnemonicSecrets[nextProfile.accountId] = mnemonic;
+  previewState.passwordVerifiers[nextProfile.accountId] = storedVerifier;
+  previewState.encryptedMnemonicSecrets[nextProfile.accountId] = encryptedMnemonic;
   previewState.activeAccountId = nextProfile.accountId;
 
   return nextProfile;
@@ -300,15 +324,15 @@ export async function unlockWallet(request: UnlockWalletRequest) {
   }
 
   const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
-  const storedHash = previewState.passwordHashes[request.accountId];
+  const storedVerifier = previewState.passwordVerifiers[request.accountId];
 
-  if (!account || !storedHash) {
+  if (!account || !storedVerifier) {
     return null;
   }
 
-  const nextHash = await hashSecret(request.password);
+  const verifiedPassword = await verifyPassword(request.password, storedVerifier);
 
-  if (nextHash !== storedHash) {
+  if (!verifiedPassword) {
     return null;
   }
 
@@ -389,21 +413,21 @@ export async function deleteWalletAccount(request: DeleteWalletAccountRequest) {
   }
 
   const account = previewState.accounts.find((entry) => entry.accountId === request.accountId);
-  const storedHash = previewState.passwordHashes[request.accountId];
+  const storedVerifier = previewState.passwordVerifiers[request.accountId];
 
-  if (!account || !storedHash) {
+  if (!account || !storedVerifier) {
     throw new Error("当前找不到要操作的账号");
   }
 
-  const nextHash = await hashSecret(request.password);
+  const verifiedPassword = await verifyPassword(request.password, storedVerifier);
 
-  if (nextHash !== storedHash) {
+  if (!verifiedPassword) {
     throw new Error("钱包密码不正确，无法删除当前账号");
   }
 
   previewState.accounts = previewState.accounts.filter((entry) => entry.accountId !== request.accountId);
-  delete previewState.passwordHashes[request.accountId];
-  delete previewState.mnemonicSecrets[request.accountId];
+  delete previewState.passwordVerifiers[request.accountId];
+  delete previewState.encryptedMnemonicSecrets[request.accountId];
 
   if (previewState.activeAccountId === request.accountId) {
     previewState.activeAccountId = previewState.accounts[0]?.accountId ?? null;
@@ -457,11 +481,11 @@ function upsertPreviewAccount(profile: WalletProfile) {
   );
 }
 
-function getNextPreviewMnemonicDerivationIndex(mnemonic: string) {
+function getNextPreviewMnemonicDerivationIndex(derivationGroupId: string) {
   const relatedAccounts = previewState.accounts.filter(
     (entry) =>
       entry.secretKind === "mnemonic" &&
-      previewState.mnemonicSecrets[entry.accountId] === mnemonic,
+      entry.derivationGroupId === derivationGroupId,
   );
 
   const currentMaxIndex = relatedAccounts.reduce(

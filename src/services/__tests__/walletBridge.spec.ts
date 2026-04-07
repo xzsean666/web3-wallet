@@ -53,6 +53,37 @@ describe("walletBridge", () => {
     expect(profile.hasBackedUpMnemonic).toBe(true);
   });
 
+  it("does not let preview create or import overwrite an unfinished backup flow", async () => {
+    const walletBridge = await loadWalletBridge();
+
+    const pendingSession = await walletBridge.createWallet({
+      walletLabel: "Primary Wallet",
+      password: "super-secret",
+      isBiometricEnabled: true,
+    });
+
+    await expect(
+      walletBridge.createWallet({
+        walletLabel: "Second Wallet",
+        password: "super-secret",
+        isBiometricEnabled: false,
+      }),
+    ).rejects.toThrow("当前有一笔待完成的备份流程");
+
+    await expect(
+      walletBridge.importWallet({
+        walletLabel: "Imported Wallet",
+        password: "super-secret",
+        isBiometricEnabled: false,
+        secretKind: "mnemonic",
+        secretValue: "test test test test test test test test test test test junk",
+      }),
+    ).rejects.toThrow("当前有一笔待完成的备份流程");
+
+    const draft = await walletBridge.loadPendingWalletDraft();
+    expect(draft?.accountId).toBe(pendingSession.draft.accountId);
+  });
+
   it("keeps the same derivation group and allocates the next free index", async () => {
     const walletBridge = await loadWalletBridge();
 

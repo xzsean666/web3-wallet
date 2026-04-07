@@ -66,4 +66,43 @@ describe("router guards", () => {
     await router.push("/onboarding/backup");
     expect(router.currentRoute.value.fullPath).toBe("/wallet");
   });
+
+  it("redirects locked pending backup routes to unlock", async () => {
+    applyWalletSession(false);
+    useOnboardingStore(pinia).stageDraft({
+      draft: {
+        accountId: "account-pending",
+        derivationIndex: 0,
+        walletLabel: "Pending Backup",
+        address: "0x2222222222222222222222222222222222222222",
+        isBiometricEnabled: true,
+        source: "created",
+        secretKind: "mnemonic",
+        createdAt: "2026-04-07T00:00:00.000Z",
+      },
+      backupAccessToken: "backup-token",
+    });
+
+    await router.push("/onboarding/backup");
+    expect(router.currentRoute.value.fullPath).toBe("/unlock");
+  });
+
+  it("redirects create and import entry routes back to backup when a draft is pending", async () => {
+    useOnboardingStore(pinia).stageDraft({
+      draft: {
+        accountId: "account-pending",
+        derivationIndex: 0,
+        walletLabel: "Pending Backup",
+        address: "0x2222222222222222222222222222222222222222",
+        isBiometricEnabled: true,
+        source: "created",
+        secretKind: "mnemonic",
+        createdAt: "2026-04-07T00:00:00.000Z",
+      },
+      backupAccessToken: "backup-token",
+    });
+
+    await router.push("/onboarding/create");
+    expect(router.currentRoute.value.fullPath).toBe("/onboarding/backup");
+  });
 });

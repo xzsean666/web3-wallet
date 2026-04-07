@@ -24,6 +24,10 @@ const metadataLookupError = ref("");
 const metadataLookupMessage = ref("");
 const isReadingMetadata = ref(false);
 const validatedMetadataKey = ref("");
+const verifiedMetadata = ref<null | {
+  key: string;
+  decimals: number;
+}>(null);
 let metadataLookupRequestId = 0;
 
 const canReadMetadata = computed(() => isAddress(contractAddress.value.trim()));
@@ -34,6 +38,7 @@ const currentMetadataKey = computed(() =>
 watch([contractAddress, activeNetwork], () => {
   metadataLookupRequestId += 1;
   validatedMetadataKey.value = "";
+  verifiedMetadata.value = null;
   metadataLookupError.value = "";
   metadataLookupMessage.value = "";
 });
@@ -76,6 +81,10 @@ async function readMetadataFromContract() {
     symbol.value = metadata.symbol;
     decimals.value = String(metadata.decimals);
     validatedMetadataKey.value = requestMetadataKey;
+    verifiedMetadata.value = {
+      key: requestMetadataKey,
+      decimals: metadata.decimals,
+    };
     metadataLookupMessage.value = "已从当前网络的合约读取 Token 元数据，你仍然可以手动修改。";
     return true;
   } catch (error) {
@@ -107,11 +116,16 @@ async function addToken() {
     }
   }
 
+  if (!verifiedMetadata.value || verifiedMetadata.value.key !== currentMetadataKey.value) {
+    formErrors.value = ["当前缺少可信的 ERC20 元数据，请重新读取链上元数据。"];
+    return;
+  }
+
   const result = walletStore.addCustomToken({
     networkId: activeNetwork.value.id,
     name: name.value,
     symbol: symbol.value,
-    decimals: decimals.value,
+    decimals: String(verifiedMetadata.value.decimals),
     contractAddress: contractAddress.value,
   });
 
@@ -168,7 +182,12 @@ async function addToken() {
 
           <label class="field">
             <span>Decimals</span>
-            <input v-model="decimals" inputmode="numeric" placeholder="18" />
+            <input
+              v-model="decimals"
+              inputmode="numeric"
+              placeholder="18"
+              readonly
+            />
           </label>
 
           <p v-if="metadataLookupMessage" class="helper-text">{{ metadataLookupMessage }}</p>
@@ -192,7 +211,7 @@ async function addToken() {
           <li>只允许当前激活网络下的 ERC20 Token</li>
           <li>必须输入合法 EVM 合约地址</li>
           <li>保存前必须成功读取 `name / symbol / decimals`</li>
-          <li>读取成功后仍然可以手动调整表单</li>
+          <li>Token 名称和 Symbol 可手动调整，Decimals 以链上返回值为准</li>
           <li>Symbol 长度不超过 10</li>
           <li>Decimals 只接受 0 到 36 的整数</li>
         </ul>

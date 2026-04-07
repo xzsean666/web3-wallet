@@ -7,6 +7,8 @@ import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { shortenAddress } from "../../utils/format";
 
 const sessionStore = useSessionStore();
@@ -58,6 +60,15 @@ async function copyAddress() {
   }, 2200);
 }
 
+async function openExternal(url: string | null) {
+  if (!url) return;
+  if (isTauri()) {
+    await openUrl(url);
+  } else {
+    window.open(url, "_blank");
+  }
+}
+
 onBeforeUnmount(resetCopyState);
 </script>
 
@@ -89,15 +100,14 @@ onBeforeUnmount(resetCopyState);
         <p class="address-block">{{ primaryAddress }}</p>
         <div class="form-actions">
           <button class="button button--primary" type="button" @click="copyAddress">复制完整地址</button>
-          <a
+          <button
             v-if="addressExplorerUrl"
             class="button button--ghost"
-            :href="addressExplorerUrl"
-            rel="noreferrer"
-            target="_blank"
+            type="button"
+            @click="openExternal(addressExplorerUrl)"
           >
             打开区块浏览器
-          </a>
+          </button>
         </div>
         <p v-if="copyState === 'success'" class="helper-text">地址已写入剪贴板，可以直接发给对方。</p>
         <p v-else-if="copyState === 'error'" class="helper-text helper-text--error">

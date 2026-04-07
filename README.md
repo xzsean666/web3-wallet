@@ -7,7 +7,8 @@
 - 已完成创建 / 导入 / 备份确认 / 解锁主流程
 - 已完成 Native Token / ERC20 余额读取、Tauri 运行时发送、收款和交易详情页
 - 已完成预置网络切换、自定义网络管理、手动添加 ERC20 Token
-- 已接入 `vue-router`、`pinia`、`Vitest`、`Playwright`
+- 接入 `vue-router`、`pinia`、`Vitest`、`Playwright`
+- 完成全量移动端 UI/UX Glassmorphism 适配与暗黑炫彩动画重构
 - 非敏感运行时状态在 Tauri 环境下已落本地 `SQLite`
 
 ## 目录

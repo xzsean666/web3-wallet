@@ -20,13 +20,13 @@ export const router = createRouter({
       path: "/onboarding/create",
       name: "create-wallet",
       component: () => import("../pages/onboarding/CreateWalletPage.vue"),
-      meta: { guestOnly: true },
+      meta: { guestOnly: true, blocksWhenPendingDraft: true },
     },
     {
       path: "/onboarding/import",
       name: "import-wallet",
       component: () => import("../pages/onboarding/ImportWalletPage.vue"),
-      meta: { guestOnly: true },
+      meta: { guestOnly: true, blocksWhenPendingDraft: true },
     },
     {
       path: "/onboarding/backup",
@@ -92,13 +92,13 @@ export const router = createRouter({
       path: "/settings/accounts/create",
       name: "account-create",
       component: () => import("../pages/onboarding/CreateWalletPage.vue"),
-      meta: { requiresUnlocked: true },
+      meta: { requiresUnlocked: true, blocksWhenPendingDraft: true },
     },
     {
       path: "/settings/accounts/import",
       name: "account-import",
       component: () => import("../pages/onboarding/ImportWalletPage.vue"),
-      meta: { requiresUnlocked: true },
+      meta: { requiresUnlocked: true, blocksWhenPendingDraft: true },
     },
     {
       path: "/settings/address-book",
@@ -123,6 +123,10 @@ router.beforeEach((to) => {
     return sessionStore.hasWallet ? "/wallet" : "/welcome";
   }
 
+  if (to.meta.requiresPendingBackup && sessionStore.hasWallet && !sessionStore.isUnlocked) {
+    return "/unlock";
+  }
+
   if (to.meta.requiresUnlocked) {
     if (!sessionStore.hasWallet) {
       return "/welcome";
@@ -135,6 +139,10 @@ router.beforeEach((to) => {
 
   if (to.meta.requiresWallet && !sessionStore.hasWallet) {
     return "/welcome";
+  }
+
+  if (to.meta.blocksWhenPendingDraft && onboardingStore.hasPendingDraft) {
+    return "/onboarding/backup";
   }
 
   if (to.meta.guestOnly && sessionStore.hasWallet) {

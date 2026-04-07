@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     convert::TryFrom,
     fs,
     path::{Path, PathBuf},
@@ -269,7 +269,10 @@ pub enum FeeMode {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TransferAsset {
     Native,
-    Erc20 { contract_address: String },
+    Erc20 { 
+        #[serde(rename = "contractAddress")]
+        contract_address: String 
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -383,6 +386,8 @@ pub enum WalletError {
     PasswordTooShort,
     #[error("当前没有待确认的创建流程")]
     NoPendingWallet,
+    #[error("当前有一笔待完成的备份流程，请先完成或取消后再继续。")]
+    PendingOnboardingInProgress,
     #[error("当前备份会话已失效，请重新创建钱包")]
     InvalidPendingBackupAccess,
     #[error("请先查看助记词，再完成备份确认")]
@@ -482,6 +487,9 @@ pub fn create_wallet(
     };
 
     let mut guard = state.pending_onboarding.lock().unwrap();
+    if guard.is_some() {
+        return Err(WalletError::PendingOnboardingInProgress);
+    }
     *guard = Some(pending);
 
     Ok(PendingWalletSession {
@@ -600,9 +608,8 @@ pub fn import_wallet(
     let request = normalize_import_request(request)?;
     let _mutation_guard = state.mutation_lock.lock().unwrap();
 
-    {
-        let mut guard = state.pending_onboarding.lock().unwrap();
-        *guard = None;
+    if state.pending_onboarding.lock().unwrap().is_some() {
+        return Err(WalletError::PendingOnboardingInProgress);
     }
 
     let (address, secret_bytes) = match request.secret_kind {
@@ -764,23 +771,40 @@ pub fn delete_wallet_account(
 
 #[tauri::command]
 pub fn load_wallet_session(app: AppHandle) -> WalletCommandResult<WalletSessionSnapshot> {
-    let accounts = load_wallet_accounts(&app)?
+    let stored_accounts = load_wallet_accounts(&app)?;
+    let stored_active_account_id = load_active_account_id(&app)?;
+    let active_account_id =
+        normalize_active_account_id(stored_active_account_id.clone(), &stored_accounts);
+
+    if active_account_id != stored_active_account_id {
+        save_active_account_id(&app, active_account_id.as_deref())?;
+    }
+
+    let accounts = stored_accounts
         .into_iter()
         .map(WalletProfile::from)
         .collect::<Vec<_>>();
 
     Ok(WalletSessionSnapshot {
         accounts,
-        active_account_id: load_active_account_id(&app)?,
+        active_account_id,
     })
 }
 
 #[tauri::command]
 pub fn load_wallet_profile(app: AppHandle) -> WalletCommandResult<Option<WalletProfile>> {
-    let active_account_id = load_active_account_id(&app)?;
+    let accounts = load_wallet_accounts(&app)?;
+    let stored_active_account_id = load_active_account_id(&app)?;
+    let active_account_id =
+        normalize_active_account_id(stored_active_account_id.clone(), &accounts);
+
+    if active_account_id != stored_active_account_id {
+        save_active_account_id(&app, active_account_id.as_deref())?;
+    }
+
     let metadata = match active_account_id {
         Some(account_id) => load_wallet_metadata(&app, &account_id)?,
-        None => load_wallet_accounts(&app)?.into_iter().next(),
+        None => accounts.into_iter().next(),
     };
 
     Ok(metadata.map(Into::into))
@@ -817,6 +841,7 @@ pub fn unlock_wallet(
     stronghold
         .load_client(STRONGHOLD_CLIENT.to_vec())
         .map_err(|_| WalletError::MissingSigningSecret)?;
+    let _validated_private_key = load_private_key_for_signing(&app, &metadata, &request.password)?;
 
     let unlocked_at = now_rfc3339();
     update_last_unlocked_at(&app, &request.account_id, &unlocked_at)?;
@@ -899,7 +924,8 @@ pub fn load_ui_state(app: AppHandle) -> WalletCommandResult<PersistedUiStateEnve
 
 #[tauri::command]
 pub fn save_ui_state(app: AppHandle, state: PersistedUiStateEnvelope) -> WalletCommandResult<()> {
-    save_persisted_ui_state(&app, &state)
+    let sanitized_state = sanitize_persisted_ui_state(&app, state)?;
+    save_persisted_ui_state(&app, &sanitized_state)
 }
 
 fn normalize_create_request(
@@ -1354,14 +1380,18 @@ fn persist_wallet_secret(
             .map_err(|error| WalletError::Stronghold(error.to_string()))?,
     };
 
-    let mut secret_payload = Vec::with_capacity(secret_bytes.len() + 16);
+    let mut secret_payload = Zeroizing::new(Vec::with_capacity(secret_bytes.len() + 16));
     secret_payload.extend_from_slice(secret_kind.as_str().as_bytes());
     secret_payload.push(b':');
     secret_payload.extend_from_slice(secret_bytes);
 
     client
         .store()
-        .insert(STRONGHOLD_RECORD.to_vec(), secret_payload, None)
+        .insert(
+            STRONGHOLD_RECORD.to_vec(),
+            std::mem::take(&mut *secret_payload),
+            None,
+        )
         .map_err(|error| WalletError::Stronghold(error.to_string()))?;
 
     stronghold
@@ -1708,6 +1738,26 @@ fn load_active_account_id(app: &AppHandle) -> Result<Option<String>, WalletError
         .map_err(Into::into)
 }
 
+fn normalize_active_account_id(
+    active_account_id: Option<String>,
+    accounts: &[StoredWalletMetadata],
+) -> Option<String> {
+    if accounts.is_empty() {
+        return None;
+    }
+
+    match active_account_id {
+        Some(account_id)
+            if accounts
+                .iter()
+                .any(|metadata| metadata.account_id == account_id) =>
+        {
+            Some(account_id)
+        }
+        _ => accounts.first().map(|metadata| metadata.account_id.clone()),
+    }
+}
+
 fn load_persisted_ui_state(app: &AppHandle) -> Result<PersistedUiStateEnvelope, WalletError> {
     let connection = metadata_connection(app)?;
     let payload = connection
@@ -1723,6 +1773,20 @@ fn load_persisted_ui_state(app: &AppHandle) -> Result<PersistedUiStateEnvelope, 
     serde_json::from_str::<PersistedUiStateEnvelope>(&payload).map_err(|error| {
         WalletError::MetadataCorrupted(format!("ui state payload decode failed: {error}"))
     })
+}
+
+fn sanitize_persisted_ui_state(
+    app: &AppHandle,
+    mut state: PersistedUiStateEnvelope,
+) -> Result<PersistedUiStateEnvelope, WalletError> {
+    let known_account_ids = load_wallet_accounts(app)?
+        .into_iter()
+        .map(|metadata| metadata.account_id)
+        .collect::<HashSet<_>>();
+    state
+        .wallet_scopes
+        .retain(|account_id, _| known_account_ids.contains(account_id));
+    Ok(state)
 }
 
 fn save_persisted_ui_state(
@@ -1963,10 +2027,18 @@ fn migrate_legacy_wallet_profile(
 fn load_wallet_metadata_from_row(
     row: &rusqlite::Row<'_>,
 ) -> Result<StoredWalletMetadata, rusqlite::Error> {
+    let derivation_index = row.get::<_, i64>(2).and_then(|value| {
+        u32::try_from(value).map_err(|_| {
+            to_sql_conversion_error(WalletError::MetadataCorrupted(
+                "wallet derivation index is out of range".into(),
+            ))
+        })
+    })?;
+
     Ok(StoredWalletMetadata {
         account_id: row.get(0)?,
         derivation_group_id: row.get(1)?,
-        derivation_index: row.get::<_, i64>(2)? as u32,
+        derivation_index,
         wallet_label: row.get(3)?,
         address: row.get(4)?,
         source: WalletSource::from_db_value(&row.get::<_, String>(5)?)
@@ -2172,5 +2244,126 @@ mod tests {
         let normalized =
             normalize_secret_access_error(WalletError::Stronghold("bad password".into()));
         assert!(matches!(normalized, WalletError::InvalidWalletPassword));
+    }
+
+    #[test]
+    fn normalizes_stale_active_account_ids() {
+        let accounts = vec![
+            StoredWalletMetadata {
+                account_id: "account-1".into(),
+                derivation_group_id: "account-1".into(),
+                derivation_index: 0,
+                wallet_label: "Primary".into(),
+                address: "0x1111111111111111111111111111111111111111".into(),
+                source: WalletSource::Created,
+                secret_kind: SecretKind::Mnemonic,
+                is_biometric_enabled: true,
+                has_backed_up_mnemonic: true,
+                created_at: now_rfc3339(),
+                last_unlocked_at: None,
+                snapshot_path: "/tmp/account-1.stronghold".into(),
+            },
+            StoredWalletMetadata {
+                account_id: "account-2".into(),
+                derivation_group_id: "account-2".into(),
+                derivation_index: 0,
+                wallet_label: "Backup".into(),
+                address: "0x2222222222222222222222222222222222222222".into(),
+                source: WalletSource::Imported,
+                secret_kind: SecretKind::PrivateKey,
+                is_biometric_enabled: false,
+                has_backed_up_mnemonic: false,
+                created_at: now_rfc3339(),
+                last_unlocked_at: None,
+                snapshot_path: "/tmp/account-2.stronghold".into(),
+            },
+        ];
+
+        assert_eq!(
+            normalize_active_account_id(Some("missing-account".into()), &accounts),
+            Some("account-1".into())
+        );
+        assert_eq!(
+            normalize_active_account_id(Some("account-2".into()), &accounts),
+            Some("account-2".into())
+        );
+    }
+
+    #[test]
+    fn rejects_negative_derivation_indices_from_metadata_rows() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                r#"
+                CREATE TABLE wallet_accounts (
+                  account_id TEXT NOT NULL,
+                  derivation_group_id TEXT NOT NULL,
+                  derivation_index INTEGER NOT NULL,
+                  wallet_label TEXT NOT NULL,
+                  address TEXT NOT NULL,
+                  source TEXT NOT NULL,
+                  secret_kind TEXT NOT NULL,
+                  biometric_enabled INTEGER NOT NULL,
+                  has_backed_up_mnemonic INTEGER NOT NULL,
+                  created_at TEXT NOT NULL,
+                  last_unlocked_at TEXT,
+                  snapshot_path TEXT NOT NULL
+                );
+                INSERT INTO wallet_accounts (
+                  account_id,
+                  derivation_group_id,
+                  derivation_index,
+                  wallet_label,
+                  address,
+                  source,
+                  secret_kind,
+                  biometric_enabled,
+                  has_backed_up_mnemonic,
+                  created_at,
+                  last_unlocked_at,
+                  snapshot_path
+                ) VALUES (
+                  'account-1',
+                  'account-1',
+                  -1,
+                  'Primary',
+                  '0x1111111111111111111111111111111111111111',
+                  'created',
+                  'mnemonic',
+                  1,
+                  1,
+                  '2026-04-07T00:00:00Z',
+                  NULL,
+                  '/tmp/account-1.stronghold'
+                );
+                "#,
+            )
+            .unwrap();
+
+        let result = connection.query_row(
+            r#"
+            SELECT
+              account_id,
+              derivation_group_id,
+              derivation_index,
+              wallet_label,
+              address,
+              source,
+              secret_kind,
+              biometric_enabled,
+              has_backed_up_mnemonic,
+              created_at,
+              last_unlocked_at,
+              snapshot_path
+            FROM wallet_accounts
+            "#,
+            [],
+            load_wallet_metadata_from_row,
+        );
+
+        assert!(matches!(
+            result,
+            Err(rusqlite::Error::FromSqlConversionFailure(..))
+        ));
     }
 }
