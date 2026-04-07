@@ -56,7 +56,7 @@ const storageLabel = computed(() => {
             创建钱包
           </RouterLink>
           <RouterLink class="button button--secondary welcome-import-button" to="/onboarding/import">
-            已有钱包
+            导入钱包
           </RouterLink>
         </div>
       </div>
