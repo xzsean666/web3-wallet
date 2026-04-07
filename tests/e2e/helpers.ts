@@ -172,5 +172,5 @@ export async function createFreshWallet(
   await page.getByLabel("我已经离线备份这组助记词").check();
   await page.getByRole("button", { name: "完成备份并进入钱包" }).click();
   await expect(page).toHaveURL(/\/wallet$/);
-  await expect(page.getByText("资产首页已经有落点了。")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
 }

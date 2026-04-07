@@ -84,12 +84,12 @@ export function formatTokenAmount(value: string | null | undefined, maximumFract
 export function formatActivityStatus(status: "pending" | "complete" | "reverted" | "empty") {
   switch (status) {
     case "pending":
-      return "Pending";
+      return "待处理";
     case "complete":
-      return "Confirmed";
+      return "已确认";
     case "reverted":
-      return "Reverted";
+      return "失败";
     case "empty":
-      return "Empty";
+      return "空";
   }
 }

@@ -23,8 +23,8 @@ describe("format helpers", () => {
   });
 
   it("formats activity statuses into readable labels", () => {
-    expect(formatActivityStatus("pending")).toBe("Pending");
-    expect(formatActivityStatus("complete")).toBe("Confirmed");
-    expect(formatActivityStatus("reverted")).toBe("Reverted");
+    expect(formatActivityStatus("pending")).toBe("待处理");
+    expect(formatActivityStatus("complete")).toBe("已确认");
+    expect(formatActivityStatus("reverted")).toBe("失败");
   });
 });

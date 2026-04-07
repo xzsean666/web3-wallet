@@ -121,7 +121,7 @@ describe("SendPage", () => {
 
     const customNetworkResult = networksStore.saveCustomNetwork({
       name: "Switch Target",
-      chainId: "84532",
+      chainId: "15420",
       rpcUrl: "https://sepolia.base.org",
       symbol: "ETH",
       explorerUrl: "",

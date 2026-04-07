@@ -18,7 +18,7 @@ test.describe("Playwright wallet flows", () => {
     await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
     await page.getByRole("button", { name: "导入钱包" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
-    await expect(page.getByText("资产首页已经有落点了。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
   });
 
   test("requires password confirmation and backup acknowledgement during wallet creation", async ({
@@ -47,7 +47,7 @@ test.describe("Playwright wallet flows", () => {
 
   test("locks, surfaces wrong-password errors, and then unlocks successfully", async ({ page }) => {
     await createFreshWallet(page, "Lock Flow Wallet");
-    await page.getByRole("button", { name: "Lock" }).click();
+    await page.getByRole("button", { name: "锁定" }).click();
     await expect(page).toHaveURL(/\/unlock$/);
 
     await page.getByLabel("钱包密码").fill("wrong-secret");
@@ -58,7 +58,7 @@ test.describe("Playwright wallet flows", () => {
     await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
     await page.getByRole("button", { name: "解锁钱包" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
-    await expect(page.getByText("资产首页已经有落点了。")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
   });
 
   test("opens the native token detail page without a missing-token warning", async ({ page }) => {
@@ -85,10 +85,10 @@ test.describe("Playwright wallet flows", () => {
       },
     });
 
-    await expect(page.getByText("Latest block: 4660")).toBeVisible();
+    await expect(page.getByText("块高 4660")).toBeVisible();
     await expect(page.getByText("1.5 ETH")).toBeVisible();
 
-    await page.getByRole("link", { name: "Add Token" }).click();
+    await page.getByRole("link", { name: "添加" }).click();
     await page.getByLabel("合约地址").fill(mockTokenAddress);
     await page.getByRole("button", { name: "读取合约元数据" }).click();
     await expect(page.getByLabel("Token 名称")).toHaveValue("Mock USD");
@@ -123,7 +123,7 @@ test.describe("Playwright wallet flows", () => {
     });
 
     await createFreshWallet(page, "Network Flow Wallet");
-    await page.getByRole("link", { name: "管理网络" }).click();
+    await page.getByRole("link", { name: "网络" }).click();
     await page.getByLabel("网络名称").fill("Playwright Sepolia");
     await page.getByLabel("Chain ID").fill("11155111");
     await page.getByLabel("RPC URL").fill(rpcUrl);

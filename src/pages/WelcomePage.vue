@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
 import SectionCard from "../components/SectionCard.vue";
 import { getAppOverview } from "../services/system";
@@ -18,74 +18,68 @@ onMounted(async () => {
         : "Tauri runtime info is unavailable in plain web preview.";
   }
 });
+
+const runtimeLabel = computed(() => {
+  if (!overview.value) {
+    return "加载中...";
+  }
+
+  return overview.value.runtime.includes("Browser") ? "浏览器预览" : "Tauri 运行时";
+});
+
+const securityLabel = computed(() => {
+  if (!overview.value) {
+    return "加载中...";
+  }
+
+  return overview.value.runtime.includes("Browser") ? "真实签名仅限 Tauri" : "本地签名";
+});
+
+const storageLabel = computed(() => {
+  if (!overview.value) {
+    return "加载中...";
+  }
+
+  return overview.value.storageStrategy.includes("Stronghold") ? "Stronghold + SQLite" : "本地存储";
+});
 </script>
 
 <template>
-  <main class="marketing-shell">
-    <section class="marketing-hero">
-      <div class="hero-copy">
+  <main class="marketing-shell marketing-shell--landing">
+    <section class="marketing-hero marketing-hero--landing">
+      <div class="hero-copy hero-copy--landing">
         <p class="eyebrow">Web3 Wallet</p>
-        <h1>面向 Native Token 和 ERC20 的精简型桌面钱包。</h1>
-        <p class="subtitle">
-          当前版本已经具备创建、导入、解锁、资产查看、发送、收款和自定义网络管理能力。
-          功能边界仍然严格锁在 Native Token 与 ERC20 Token。
-        </p>
+        <h1>创建或导入钱包</h1>
+        <p class="subtitle">只保留常用操作。支持 Native Token 和 ERC20。</p>
         <div class="button-row">
           <RouterLink class="button button--primary" to="/onboarding/create">
             创建钱包
           </RouterLink>
-          <RouterLink class="button button--secondary" to="/onboarding/import">
-            导入钱包
+          <RouterLink class="button button--secondary welcome-import-button" to="/onboarding/import">
+            已有钱包
           </RouterLink>
         </div>
       </div>
-
-      <SectionCard
-        title="Scope"
-        description="MVP 只支持 Native Token 和 ERC20 Token"
-        tone="accent"
-      >
-        <ul class="bullet-list">
-          <li>支持预置 EVM 网络</li>
-          <li>支持自定义 EVM 网络</li>
-          <li>不支持 NFT、Swap、WalletConnect、任意合约交互</li>
-        </ul>
-      </SectionCard>
     </section>
 
-    <section class="page-grid page-grid--3">
-      <SectionCard title="Runtime" description="当前项目运行时">
-        <p>{{ overview?.runtime ?? "Loading runtime details..." }}</p>
-      </SectionCard>
-      <SectionCard title="Security" description="当前安全边界">
-        <p>{{ overview?.securityPolicy ?? "Loading security policy..." }}</p>
-      </SectionCard>
-      <SectionCard title="Storage" description="当前存储策略">
-        <p>{{ overview?.storageStrategy ?? "Loading storage strategy..." }}</p>
-      </SectionCard>
-    </section>
-
-    <section class="page-grid page-grid--2">
-      <SectionCard title="This Build Includes" description="当前已经打通的主流程">
-        <ul class="bullet-list">
-          <li>创建、导入、解锁和助记词备份流程</li>
-          <li>Native Token 与 ERC20 余额读取</li>
-          <li>本地签名 + 原始交易广播</li>
-          <li>自定义 EVM 网络管理与 RPC 校验</li>
-        </ul>
-      </SectionCard>
-
-      <SectionCard title="Current Limits" description="MVP 边界">
-        <ul class="bullet-list">
-          <li>不支持 NFT、Swap、WalletConnect</li>
-          <li>不支持消息签名、Typed Data、任意合约交互</li>
-          <li>浏览器预览模式不支持真实签名</li>
-          <li>Tauri 运行时会把非敏感状态写入本地 SQLite</li>
-        </ul>
-        <p v-if="loadError" class="helper-text helper-text--error">
-          {{ loadError }}
-        </p>
-      </SectionCard>
-    </section>
+    <SectionCard class="welcome-note" title="预览说明">
+      <div class="key-value-list">
+        <div class="key-value-row">
+          <span>模式</span>
+          <strong>{{ runtimeLabel }}</strong>
+        </div>
+        <div class="key-value-row">
+          <span>签名</span>
+          <strong>{{ securityLabel }}</strong>
+        </div>
+        <div class="key-value-row">
+          <span>存储</span>
+          <strong>{{ storageLabel }}</strong>
+        </div>
+      </div>
+      <p v-if="loadError" class="helper-text helper-text--error">
+        {{ loadError }}
+      </p>
+    </SectionCard>
   </main>
 </template>

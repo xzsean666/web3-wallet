@@ -5,11 +5,24 @@ import { useNetworksStore } from "../stores/networks";
 import { useSessionStore } from "../stores/session";
 import { shortenAddress } from "../utils/format";
 
-defineProps<{
-  eyebrow: string;
-  title: string;
-  subtitle: string;
-}>();
+withDefaults(
+  defineProps<{
+    eyebrow?: string;
+    title?: string;
+    subtitle?: string;
+    showHero?: boolean;
+    compactNav?: boolean;
+    showNav?: boolean;
+  }>(),
+  {
+    eyebrow: "",
+    title: "",
+    subtitle: "",
+    showHero: true,
+    compactNav: false,
+    showNav: true,
+  },
+);
 
 const sessionStore = useSessionStore();
 const networksStore = useNetworksStore();
@@ -20,29 +33,37 @@ const { activeNetwork } = storeToRefs(networksStore);
 
 <template>
   <main class="page-shell">
-    <header class="wallet-chrome">
-      <RouterLink class="brand-link" to="/wallet">Web3 Wallet</RouterLink>
-      <nav class="wallet-nav">
-        <RouterLink to="/wallet">Assets</RouterLink>
-        <RouterLink to="/settings/networks">Networks</RouterLink>
-        <RouterLink to="/settings">Settings</RouterLink>
-      </nav>
-      <div class="wallet-meta">
-        <span class="meta-pill">{{ activeNetwork.name }}</span>
-        <span class="meta-pill meta-pill--subtle">
-          {{ walletLabel || shortenAddress(primaryAddress) }}
-        </span>
-        <RouterLink class="meta-pill meta-pill--subtle" to="/settings/accounts">
-          {{ accountCount }} Accounts
-        </RouterLink>
+    <header :class="['wallet-chrome', compactNav ? 'wallet-chrome--compact' : '']">
+      <div class="wallet-chrome__main">
+        <div class="wallet-chrome__brand">
+          <RouterLink class="brand-link" to="/wallet">Web3 Wallet</RouterLink>
+          <p class="wallet-chrome__account">
+            {{ walletLabel || shortenAddress(primaryAddress) }}
+          </p>
+        </div>
+        <div class="wallet-meta">
+          <RouterLink class="meta-pill" to="/settings/networks">
+            {{ activeNetwork.name }}
+          </RouterLink>
+          <RouterLink class="meta-pill meta-pill--subtle" to="/settings/accounts">
+            {{ accountCount }} 个账户
+          </RouterLink>
+        </div>
       </div>
+
+      <nav v-if="showNav" :class="['wallet-nav', compactNav ? 'wallet-nav--compact' : '']">
+        <RouterLink to="/wallet">钱包</RouterLink>
+        <RouterLink v-if="!compactNav" to="/wallet/send">发送</RouterLink>
+        <RouterLink to="/settings/networks">网络</RouterLink>
+        <RouterLink to="/settings">设置</RouterLink>
+      </nav>
     </header>
 
-    <section class="wallet-hero">
-      <div>
-        <p class="eyebrow">{{ eyebrow }}</p>
+    <section v-if="showHero && (eyebrow || title || subtitle)" class="wallet-hero">
+      <div class="wallet-hero__copy">
+        <p v-if="eyebrow" class="eyebrow">{{ eyebrow }}</p>
         <h1>{{ title }}</h1>
-        <p class="subtitle">{{ subtitle }}</p>
+        <p v-if="subtitle" class="subtitle">{{ subtitle }}</p>
       </div>
       <div class="wallet-hero__actions">
         <slot name="actions" />
