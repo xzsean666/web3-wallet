@@ -651,7 +651,7 @@ body {
 }
 
 .page-shell {
-  max-width: 460px;
+  max-width: 420px;
   padding: 14px 12px 28px;
 }
 
@@ -713,6 +713,8 @@ body {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .wallet-chrome__brand {
@@ -741,7 +743,7 @@ body {
 
 .wallet-nav {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 6px;
   padding: 4px;
   border-radius: 14px;
@@ -771,13 +773,20 @@ body {
 }
 
 .wallet-meta {
+  display: flex;
   justify-content: flex-end;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .meta-pill {
   background: var(--wallet-accent-soft);
   color: #a45518;
   max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .meta-pill--subtle {
@@ -875,6 +884,12 @@ h1 {
   align-items: flex-start;
   gap: 8px;
   margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.section-card__header > div:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
 }
 
 .section-card__header h2 {
@@ -891,7 +906,8 @@ h1 {
 .section-card__meta {
   color: #7b7064;
   font-size: 0.78rem;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .section-card__actions {
@@ -933,6 +949,9 @@ h1 {
   border-radius: 12px;
   font-size: 0.88rem;
   font-weight: 700;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
 }
 
 .button--primary {
@@ -1058,6 +1077,7 @@ h1 {
   justify-content: space-between;
   align-items: flex-start;
   gap: 12px;
+  flex-wrap: wrap;
 }
 
 .home-balance-card {
@@ -1102,6 +1122,8 @@ h1 {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .wallet-mini-profile {
@@ -1276,6 +1298,8 @@ h1 {
   gap: 2px;
   text-align: right;
   flex: 0 0 auto;
+  min-width: 0;
+  max-width: 46%;
 }
 
 .token-row--activity .token-row__meta {
@@ -1296,6 +1320,7 @@ h1 {
   color: #7b7064;
   font-size: 0.78rem;
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .token-row__actions {
@@ -1402,6 +1427,11 @@ h1 {
 }
 
 .key-value-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  flex-wrap: wrap;
   padding-bottom: 10px;
   border-bottom: 1px solid rgba(23, 19, 15, 0.08);
 }
@@ -1413,6 +1443,10 @@ h1 {
 .key-value-row strong {
   color: #17130f;
   font-size: 0.88rem;
+  margin-left: 0;
+  max-width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .receive-qr-card {
@@ -1549,12 +1583,39 @@ h1 {
   font-size: 0.74rem;
   line-height: 1.5;
   word-break: break-all;
+  overflow-wrap: anywhere;
 }
 
 .card-stack {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+.quick-link-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quick-link-grid .button {
+  width: 100%;
+}
+
+.simple-sheet {
+  background:
+    radial-gradient(circle at top right, rgba(246, 133, 27, 0.12), transparent 32%),
+    var(--wallet-surface);
+}
+
+.token-row__address {
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+}
+
+.token-row--activity-page {
+  align-items: flex-start;
 }
 
 .bullet-list {
@@ -1610,10 +1671,6 @@ h1 {
   }
 
   .wallet-nav {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .wallet-nav--compact {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
@@ -1655,6 +1712,11 @@ h1 {
     font-size: 1.6rem;
   }
 
+  .home-quick-actions,
+  .quick-link-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
   .hero-copy {
     padding: 18px 16px;
   }
@@ -1687,6 +1749,14 @@ h1 {
 
   .address-block {
     font-size: 0.7rem;
+  }
+
+  .token-row {
+    align-items: flex-start;
+  }
+
+  .token-row__meta {
+    max-width: 44%;
   }
 
   .welcome-note .key-value-row strong {

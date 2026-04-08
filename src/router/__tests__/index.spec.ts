@@ -48,6 +48,9 @@ describe("router guards", () => {
 
     await router.push("/wallet/send");
     expect(router.currentRoute.value.fullPath).toBe("/unlock");
+
+    await router.push("/wallet/activity");
+    expect(router.currentRoute.value.fullPath).toBe("/unlock");
   });
 
   it("redirects guest-only routes away from existing wallets", async () => {

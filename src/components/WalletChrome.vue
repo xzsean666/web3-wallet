@@ -27,7 +27,7 @@ withDefaults(
 const sessionStore = useSessionStore();
 const networksStore = useNetworksStore();
 
-const { accountCount, primaryAddress, walletLabel } = storeToRefs(sessionStore);
+const { primaryAddress, walletLabel } = storeToRefs(sessionStore);
 const { activeNetwork } = storeToRefs(networksStore);
 </script>
 
@@ -36,25 +36,25 @@ const { activeNetwork } = storeToRefs(networksStore);
     <header :class="['wallet-chrome', compactNav ? 'wallet-chrome--compact' : '']">
       <div class="wallet-chrome__main">
         <div class="wallet-chrome__brand">
-          <RouterLink class="brand-link" to="/wallet">Web3 Wallet</RouterLink>
+          <RouterLink class="brand-link" to="/wallet">钱包</RouterLink>
           <p class="wallet-chrome__account">
             {{ walletLabel || shortenAddress(primaryAddress) }}
           </p>
         </div>
         <div class="wallet-meta">
-          <RouterLink class="meta-pill" to="/settings/networks">
+          <RouterLink
+            class="meta-pill"
+            to="/settings/networks"
+            :aria-label="`网络：${activeNetwork.name}`"
+          >
             {{ activeNetwork.name }}
-          </RouterLink>
-          <RouterLink class="meta-pill meta-pill--subtle" to="/settings/accounts">
-            {{ accountCount }} 个账户
           </RouterLink>
         </div>
       </div>
 
       <nav v-if="showNav" :class="['wallet-nav', compactNav ? 'wallet-nav--compact' : '']">
-        <RouterLink to="/wallet">钱包</RouterLink>
-        <RouterLink v-if="!compactNav" to="/wallet/send">发送</RouterLink>
-        <RouterLink to="/settings/networks">网络</RouterLink>
+        <RouterLink to="/wallet">首页</RouterLink>
+        <RouterLink to="/wallet/send">发送</RouterLink>
         <RouterLink to="/settings">设置</RouterLink>
       </nav>
     </header>

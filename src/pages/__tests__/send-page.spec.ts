@@ -3,7 +3,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SendPage from "../wallet/SendPage.vue";
-import { clearPersistedUiState } from "../../services/uiState";
+import { clearPersistedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
 import { useWalletStore } from "../../stores/wallet";
@@ -14,6 +14,7 @@ const {
   estimateTransferPreviewMock,
   fetchPortfolioSnapshotMock,
   prepareTransferConfirmationMock,
+  routeQueryMock,
   routerPushMock,
   signTransferTransactionMock,
 } = vi.hoisted(() => ({
@@ -28,6 +29,7 @@ const {
   estimateTransferPreviewMock: vi.fn(),
   fetchPortfolioSnapshotMock: vi.fn(),
   prepareTransferConfirmationMock: vi.fn(),
+  routeQueryMock: {} as Record<string, string>,
   routerPushMock: vi.fn(),
   signTransferTransactionMock: vi.fn(),
 }));
@@ -58,7 +60,7 @@ vi.mock("vue-router", () => ({
   }),
   useRoute: () => ({
     params: {},
-    query: {},
+    query: routeQueryMock,
   }),
   useRouter: () => ({
     push: routerPushMock,
@@ -145,8 +147,38 @@ describe("SendPage", () => {
     estimateTransferPreviewMock.mockReset();
     fetchPortfolioSnapshotMock.mockReset();
     prepareTransferConfirmationMock.mockReset();
+    Object.keys(routeQueryMock).forEach((key) => delete routeQueryMock[key]);
     routerPushMock.mockReset();
     signTransferTransactionMock.mockReset();
+  });
+
+  it("restores the persisted send draft for the active account", async () => {
+    bootstrapSendSession();
+    patchWalletScopedUiState("account-1", {
+      sendDraft: {
+        networkId: "ethereum",
+        assetId: "usdc-ethereum",
+        recipientAddress: "0x2222222222222222222222222222222222222222",
+        amount: "2.5",
+      },
+    });
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect((wrapper.get("select").element as HTMLSelectElement).value).toBe("usdc-ethereum");
+    expect((wrapper.get('input[placeholder="0x..."]').element as HTMLInputElement).value).toBe(
+      "0x2222222222222222222222222222222222222222",
+    );
+    expect((wrapper.get('input[placeholder="0.00"]').element as HTMLInputElement).value).toBe("2.5");
   });
 
   it("aborts broadcasting when the network changes after signing starts", async () => {
@@ -410,5 +442,59 @@ describe("SendPage", () => {
       password: "super-secret",
       confirmationId: "confirmation-erc20",
     });
+  });
+
+  it("shows the ERC20 contract address in the confirmation summary", async () => {
+    const { walletStore } = bootstrapSendSession();
+    const tokenAddress = "0x5555555555555555555555555555555555555555";
+    const addTokenResult = walletStore.addCustomToken({
+      networkId: "ethereum",
+      name: "Mock USD",
+      symbol: "MUSD",
+      decimals: "6",
+      contractAddress: tokenAddress,
+    });
+
+    expect(addTokenResult.ok).toBe(true);
+    const tokenId = addTokenResult.ok ? addTokenResult.token.id : "";
+    estimateTransferPreviewMock.mockResolvedValue({
+      assetType: "erc20",
+      feeMode: "legacy",
+      nonce: "9",
+      gasLimit: "65000",
+      gasPriceWei: "42",
+      gasPriceGwei: "0.000000042",
+      maxFeePerGasWei: null,
+      maxFeePerGasGwei: null,
+      maxPriorityFeePerGasWei: null,
+      maxPriorityFeePerGasGwei: null,
+      estimatedNetworkFee: "0.00273",
+      parsedAmount: "1250000",
+      contractAddress: tokenAddress,
+    });
+    prepareTransferConfirmationMock.mockResolvedValue({
+      confirmationId: "confirmation-erc20-summary",
+    });
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await wrapper.get("select").setValue(tokenId);
+    await wrapper.get('input[placeholder="0x..."]').setValue(
+      "0x6666666666666666666666666666666666666666",
+    );
+    await wrapper.get('input[placeholder="0.00"]').setValue("1.25");
+    await wrapper.get('button[type="submit"]').trigger("submit");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("合约");
+    expect(wrapper.text()).toContain(tokenAddress);
   });
 });

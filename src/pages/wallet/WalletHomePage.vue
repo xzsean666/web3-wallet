@@ -9,22 +9,14 @@ import { useNetworksStore } from "../../stores/networks";
 import { usePortfolioStore } from "../../stores/portfolio";
 import { useSessionStore } from "../../stores/session";
 import { useWalletStore } from "../../stores/wallet";
-import type { ActivityItem, TrackedToken } from "../../types/wallet";
-import {
-  formatActivityStatus,
-  formatRelativeTime,
-  formatTokenAmount,
-  shortenAddress,
-} from "../../utils/format";
+import type { ActivityItem } from "../../types/wallet";
+import { formatRelativeTime, formatTokenAmount, shortenAddress } from "../../utils/format";
 
 const router = useRouter();
 const sessionStore = useSessionStore();
 const networksStore = useNetworksStore();
 const portfolioStore = usePortfolioStore();
 const walletStore = useWalletStore();
-
-type ActivityFilter = "all" | "network" | "pending";
-type AssetFilter = "all" | "preset" | "custom";
 
 const { activeNetwork, allNetworks } = storeToRefs(networksStore);
 const { accountCount, activeAccountId, primaryAddress, walletLabel } = storeToRefs(sessionStore);
@@ -36,13 +28,9 @@ const tokensForActiveNetwork = computed(() =>
 const snapshot = computed(() =>
   portfolioStore.getSnapshot(activeNetwork.value.id, primaryAddress.value || null),
 );
-const activityFilter = ref<ActivityFilter>("all");
-const assetFilter = ref<AssetFilter>("all");
-const assetQuery = ref("");
 const submittedActivity = computed(() =>
   recentActivity.value.filter(isActivityForCurrentAccount),
 );
-const hasSubmittedActivity = computed(() => submittedActivity.value.length > 0);
 const accountDisplayLabel = computed(() =>
   walletLabel.value || shortenAddress(primaryAddress.value) || "当前账户",
 );
@@ -51,127 +39,21 @@ const accountMonogram = computed(() => {
 
   return source.slice(0, 1).toUpperCase();
 });
-const filteredActivity = computed(() =>
-  submittedActivity.value.filter((item) => {
-    if (activityFilter.value === "pending") {
-      return item.status === "pending";
-    }
-
-    if (activityFilter.value === "network") {
-      return resolveActivityNetwork(item).id === activeNetwork.value.id;
-    }
-
-    return true;
-  }),
-);
-const activityFilterOptions = [
-  {
-    id: "all" as const,
-    label: "全部",
-  },
-  {
-    id: "network" as const,
-    label: "本链",
-  },
-  {
-    id: "pending" as const,
-    label: "待处理",
-  },
-];
-const assetFilterOptions = [
-  {
-    id: "all" as const,
-    label: "全部",
-  },
-  {
-    id: "preset" as const,
-    label: "默认",
-  },
-  {
-    id: "custom" as const,
-    label: "自选",
-  },
-];
-const activityEmptyStateMessage = computed(() => {
-  if (!hasSubmittedActivity.value) {
-    return "还没有活动";
-  }
-
-  if (activityFilter.value === "network") {
-    return `${activeNetwork.value.name} 上暂无活动`;
-  }
-
-  if (activityFilter.value === "pending") {
-    return "没有待处理交易";
-  }
-
-  return "暂无可显示活动";
-});
-const activitySummaryLabel = computed(() => {
-  if (!hasSubmittedActivity.value) {
-    return "暂无活动";
-  }
-
-  return `${filteredActivity.value.length} / ${submittedActivity.value.length} 条`;
-});
-const normalizedAssetQuery = computed(() => assetQuery.value.trim().toLowerCase());
 
 const nativeAsset = computed(() => ({
   name: `${activeNetwork.value.name} Native Token`,
   symbol: activeNetwork.value.symbol,
   balance: snapshot.value.nativeBalance,
 }));
-const filteredTokensForActiveNetwork = computed(() =>
-  tokensForActiveNetwork.value.filter((token) => {
-    if (assetFilter.value === "preset" && token.source !== "preset") {
-      return false;
-    }
-
-    if (assetFilter.value === "custom" && token.source !== "custom") {
-      return false;
-    }
-
-    if (!normalizedAssetQuery.value) {
-      return true;
-    }
-
-    return `${token.symbol} ${token.name}`.toLowerCase().includes(normalizedAssetQuery.value);
-  }),
-);
-const showNativeAsset = computed(() => {
-  if (assetFilter.value === "custom") {
-    return false;
-  }
-
-  if (!normalizedAssetQuery.value) {
-    return true;
-  }
-
-  return `${nativeAsset.value.symbol} ${nativeAsset.value.name}`.toLowerCase().includes(normalizedAssetQuery.value);
-});
+const filteredTokensForActiveNetwork = computed(() => tokensForActiveNetwork.value);
+const showNativeAsset = computed(() => true);
 const visibleAssetCount = computed(() =>
   filteredTokensForActiveNetwork.value.length + (showNativeAsset.value ? 1 : 0),
 );
 const totalAssetCount = computed(() => tokensForActiveNetwork.value.length + 1);
 const hasVisibleAssets = computed(() => visibleAssetCount.value > 0);
-const assetSummaryLabel = computed(() => `${visibleAssetCount.value} / ${totalAssetCount.value} 项`);
-const assetEmptyStateMessage = computed(() => {
-  const keyword = assetQuery.value.trim();
-
-  if (keyword) {
-    return `没有找到“${keyword}”`;
-  }
-
-  if (assetFilter.value === "custom") {
-    return "还没有自选代币";
-  }
-
-  if (assetFilter.value === "preset") {
-    return "没有默认资产";
-  }
-
-  return "没有可显示资产";
-});
+const assetSummaryLabel = computed(() => `${totalAssetCount.value} 项`);
+const assetEmptyStateMessage = computed(() => "没有可显示资产");
 const pendingActivities = computed(() =>
   submittedActivity.value.filter((item) => item.status === "pending" && item.txHash),
 );
@@ -192,11 +74,6 @@ const homeSyncLabel = computed(() => {
 });
 let activitySyncTimer: number | null = null;
 const isRefreshingHome = ref(false);
-const lastActivityCheckAt = ref<string | null>(null);
-const confirmingRemovalTokenId = ref<string | null>(null);
-const removingTokenId = ref<string | null>(null);
-const assetActionFeedback = ref("");
-const assetActionFeedbackTone = ref<"success" | "error" | "neutral">("neutral");
 let portfolioRefreshRequestId = 0;
 
 function resolveActivityNetwork(item: ActivityItem) {
@@ -209,27 +86,6 @@ function resolveActivityNetwork(item: ActivityItem) {
   }
 
   return activeNetwork.value;
-}
-
-function activityNetworkName(item: ActivityItem) {
-  return resolveActivityNetwork(item).name;
-}
-
-function activityTitle(item: ActivityItem) {
-  return walletStore.formatActivityTitle({
-    ...item,
-    networkId: resolveActivityNetwork(item).id,
-  });
-}
-
-function activitySubtitle(item: ActivityItem) {
-  return walletStore.formatActivitySubtitle(
-    {
-      ...item,
-      networkId: resolveActivityNetwork(item).id,
-    },
-    activityNetworkName(item),
-  );
 }
 
 function assetBadgeLabel(symbol: string) {
@@ -250,63 +106,6 @@ function isActivityForCurrentAccount(item: ActivityItem) {
   }
 
   return accountCount.value <= 1;
-}
-
-function resetAssetActionState() {
-  confirmingRemovalTokenId.value = null;
-  removingTokenId.value = null;
-  assetActionFeedback.value = "";
-  assetActionFeedbackTone.value = "neutral";
-}
-
-function resetAssetFilterState() {
-  assetFilter.value = "all";
-  assetQuery.value = "";
-}
-
-function removeFeedbackClass() {
-  if (assetActionFeedbackTone.value === "success") {
-    return "helper-text helper-text--success";
-  }
-
-  if (assetActionFeedbackTone.value === "error") {
-    return "helper-text helper-text--error";
-  }
-
-  return "helper-text";
-}
-
-function requestCustomTokenRemoval(token: TrackedToken) {
-  if (removingTokenId.value) {
-    return;
-  }
-
-  if (confirmingRemovalTokenId.value !== token.id) {
-    confirmingRemovalTokenId.value = token.id;
-    assetActionFeedback.value = "";
-    assetActionFeedbackTone.value = "neutral";
-    return;
-  }
-
-  removingTokenId.value = token.id;
-  const result = walletStore.removeCustomToken(token.id);
-  removingTokenId.value = null;
-
-  if (!result.ok) {
-    assetActionFeedback.value = result.error;
-    assetActionFeedbackTone.value = "error";
-    return;
-  }
-
-  confirmingRemovalTokenId.value = null;
-  assetActionFeedback.value = `${token.symbol} 已从当前资产列表移除，只影响本地跟踪状态。`;
-  assetActionFeedbackTone.value = "success";
-}
-
-function cancelCustomTokenRemoval(tokenId: string) {
-  if (confirmingRemovalTokenId.value === tokenId) {
-    confirmingRemovalTokenId.value = null;
-  }
 }
 
 async function refreshPortfolio() {
@@ -351,7 +150,6 @@ async function refreshPortfolio() {
 
 async function syncPendingActivityStatus() {
   if (pendingActivities.value.length === 0) {
-    lastActivityCheckAt.value = new Date().toISOString();
     return;
   }
 
@@ -385,7 +183,6 @@ async function syncPendingActivityStatus() {
     }),
   );
 
-  lastActivityCheckAt.value = new Date().toISOString();
 }
 
 async function refreshHomeContext() {
@@ -435,26 +232,6 @@ watch([activeNetwork, primaryAddress, tokensForActiveNetwork], refreshPortfolio,
   deep: true,
 });
 
-watch(activeNetwork, () => {
-  resetAssetActionState();
-  resetAssetFilterState();
-});
-watch(primaryAddress, resetAssetActionState);
-watch(tokensForActiveNetwork, (tokens) => {
-  if (!confirmingRemovalTokenId.value) {
-    return;
-  }
-
-  if (!tokens.some((token) => token.id === confirmingRemovalTokenId.value)) {
-    confirmingRemovalTokenId.value = null;
-  }
-}, {
-  deep: true,
-});
-watch([assetFilter, assetQuery], () => {
-  confirmingRemovalTokenId.value = null;
-});
-
 watch([pendingActivities, allNetworks], () => {
   void syncPendingActivityStatus();
 }, {
@@ -466,6 +243,7 @@ watch([pendingActivities, allNetworks], () => {
   <WalletChrome
     :compact-nav="true"
     :show-hero="false"
+    :show-nav="false"
   >
     <section class="section-card home-balance-card">
       <div class="home-balance-card__top">
@@ -501,6 +279,8 @@ watch([pendingActivities, allNetworks], () => {
       <div class="home-quick-actions">
         <RouterLink class="button button--secondary" to="/wallet/send">发送</RouterLink>
         <RouterLink class="button button--secondary" to="/wallet/receive">收款</RouterLink>
+        <RouterLink class="button button--ghost" to="/wallet/activity">活动</RouterLink>
+        <RouterLink class="button button--ghost" to="/settings">设置</RouterLink>
       </div>
 
       <p v-if="snapshot.error" class="helper-text helper-text--error">{{ snapshot.error }}</p>
@@ -517,28 +297,6 @@ watch([pendingActivities, allNetworks], () => {
           </div>
         </template>
 
-        <div class="asset-toolbar">
-          <label class="asset-toolbar__search">
-            <input
-              v-model.trim="assetQuery"
-              aria-label="搜索资产"
-              type="text"
-              placeholder="搜索资产"
-            />
-          </label>
-
-          <div class="segmented-control asset-toolbar__filters">
-            <button
-              v-for="option in assetFilterOptions"
-              :key="option.id"
-              type="button"
-              :class="['segment', assetFilter === option.id ? 'segment--active' : '']"
-              @click="assetFilter = option.id"
-            >
-              {{ option.label }}
-            </button>
-          </div>
-        </div>
         <div v-if="hasVisibleAssets" class="token-list">
           <RouterLink v-if="showNativeAsset" class="token-row" to="/wallet/token/native">
             <div class="token-row__main">
@@ -554,166 +312,39 @@ watch([pendingActivities, allNetworks], () => {
             </div>
           </RouterLink>
 
-          <template v-for="token in filteredTokensForActiveNetwork" :key="token.id">
-            <RouterLink v-if="token.source !== 'custom'" :to="`/wallet/token/${token.id}`" class="token-row">
-              <div class="token-row__main">
-                <span class="asset-badge asset-badge--preset">{{ assetBadgeLabel(token.symbol) }}</span>
-                <div class="token-row__text">
-                  <strong>{{ token.symbol }}</strong>
-                  <p>{{ token.name }}</p>
-                </div>
-              </div>
-              <div class="token-row__meta">
-                <strong class="token-row__balance">
-                  {{ formatTokenAmount(snapshot.tokenBalances[token.id] ?? token.balance) }}
-                </strong>
-                <span class="token-row__subvalue">{{ token.symbol }}</span>
-              </div>
-            </RouterLink>
-
-            <article
-              v-else
-              :class="[
-                'token-row',
-                'token-row--managed',
-                confirmingRemovalTokenId === token.id ? 'token-row--confirming' : '',
-              ]"
-            >
-              <div class="token-row__managed-summary">
-                <div class="token-row__main">
-                  <span class="asset-badge asset-badge--custom">{{ assetBadgeLabel(token.symbol) }}</span>
-                  <div class="token-row__text">
-                    <strong>{{ token.symbol }}</strong>
-                    <p>{{ token.name }}</p>
-                  </div>
-                </div>
-                <div class="token-row__meta token-row__meta--managed">
-                  <strong class="token-row__balance">
-                    {{ formatTokenAmount(snapshot.tokenBalances[token.id] ?? token.balance) }}
-                  </strong>
-                  <span class="token-row__subvalue">自选</span>
-                </div>
-              </div>
-              <div class="inline-actions token-row__actions">
-                <RouterLink class="button button--ghost button--small" :to="`/wallet/token/${token.id}`">
-                  详情
-                </RouterLink>
-                <button
-                  class="button button--danger button--small"
-                  type="button"
-                  :disabled="removingTokenId === token.id"
-                  @click="requestCustomTokenRemoval(token)"
-                >
-                  {{
-                    removingTokenId === token.id
-                      ? "移除中"
-                      : confirmingRemovalTokenId === token.id
-                        ? "确认移除"
-                        : "移除"
-                  }}
-                </button>
-                <button
-                  v-if="confirmingRemovalTokenId === token.id"
-                  class="button button--ghost button--small"
-                  type="button"
-                  :disabled="removingTokenId === token.id"
-                  @click="cancelCustomTokenRemoval(token.id)"
-                >
-                  取消
-                </button>
-              </div>
-              <p v-if="confirmingRemovalTokenId === token.id" class="helper-text token-row__hint">
-                仅移除本地跟踪，不影响链上资产。
-              </p>
-            </article>
-          </template>
-        </div>
-        <p v-else class="empty-state">{{ assetEmptyStateMessage }}</p>
-
-        <p v-if="assetActionFeedback" :class="removeFeedbackClass()">{{ assetActionFeedback }}</p>
-        <p v-if="snapshot.status === 'loading'" class="helper-text">正在同步链上余额...</p>
-      </SectionCard>
-
-      <SectionCard class="wallet-stream-card" title="活动">
-        <template #header>
-          <div class="section-card__actions">
-            <span class="section-card__meta">
-              {{ lastActivityCheckAt ? `${activitySummaryLabel} · ${formatRelativeTime(lastActivityCheckAt)}` : activitySummaryLabel }}
-            </span>
-            <button
-              class="button button--ghost button--small"
-              type="button"
-              :disabled="isRefreshingHome"
-              @click="refreshHomeContext"
-            >
-              {{ isRefreshingHome ? "刷新中" : "刷新" }}
-            </button>
-          </div>
-        </template>
-
-        <div class="segmented-control">
-          <button
-            v-for="option in activityFilterOptions"
-            :key="option.id"
-            type="button"
-            :class="['segment', activityFilter === option.id ? 'segment--active' : '']"
-            @click="activityFilter = option.id"
+          <RouterLink
+            v-for="token in filteredTokensForActiveNetwork"
+            :key="token.id"
+            :to="`/wallet/token/${token.id}`"
+            class="token-row"
           >
-            {{ option.label }}
-          </button>
-        </div>
-
-        <div v-if="filteredActivity.length" class="token-list">
-          <component
-            :is="item.txHash ? RouterLink : 'div'"
-            v-for="item in filteredActivity"
-            :key="item.id"
-            class="token-row token-row--muted token-row--activity"
-            v-bind="
-              item.txHash
-                ? {
-                    to: {
-                      name: 'wallet-tx-detail',
-                      params: {
-                        txHash: item.txHash,
-                      },
-                      query: {
-                        networkId: item.networkId ?? activeNetwork.id,
-                      },
-                    },
-                  }
-                : {}
-            "
-          >
-            <div class="token-row__main token-row__content">
-              <span class="asset-badge asset-badge--activity">{{ assetBadgeLabel(item.assetSymbol ?? "TX") }}</span>
+            <div class="token-row__main">
+              <span
+                :class="[
+                  'asset-badge',
+                  token.source === 'custom' ? 'asset-badge--custom' : 'asset-badge--preset',
+                ]"
+              >
+                {{ assetBadgeLabel(token.symbol) }}
+              </span>
               <div class="token-row__text">
-                <strong>{{ activityTitle(item) }}</strong>
-                <p>{{ activitySubtitle(item) }}</p>
+                <strong>{{ token.symbol }}</strong>
+                <p>{{ token.name }}</p>
               </div>
             </div>
             <div class="token-row__meta">
-              <strong class="token-row__timestamp">{{ formatRelativeTime(item.createdAt) }}</strong>
-              <span
-                :class="[
-                  'status-chip',
-                  item.status === 'complete'
-                    ? 'status-chip--accent'
-                    : item.status === 'reverted'
-                      ? 'status-chip--danger'
-                      : item.status === 'pending'
-                        ? 'status-chip--warning'
-                        : '',
-                ]"
-              >
-                {{ formatActivityStatus(item.status) }}
+              <strong class="token-row__balance">
+                {{ formatTokenAmount(snapshot.tokenBalances[token.id] ?? token.balance) }}
+              </strong>
+              <span class="token-row__subvalue">
+                {{ token.source === "custom" ? "自选" : token.symbol }}
               </span>
             </div>
-          </component>
+          </RouterLink>
         </div>
-        <p v-else class="empty-state">
-          {{ activityEmptyStateMessage }}
-        </p>
+        <p v-else class="empty-state">{{ assetEmptyStateMessage }}</p>
+
+        <p v-if="snapshot.status === 'loading'" class="helper-text">正在同步链上余额...</p>
       </SectionCard>
     </section>
   </WalletChrome>

@@ -75,6 +75,13 @@ export interface AddressBookDraft {
   note: string;
 }
 
+export interface SendDraft {
+  networkId: string;
+  assetId: string;
+  recipientAddress: string;
+  amount: string;
+}
+
 export interface AddressBookEntry {
   id: string;
   networkId: string;

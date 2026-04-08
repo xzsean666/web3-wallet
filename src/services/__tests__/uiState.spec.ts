@@ -54,6 +54,12 @@ describe("uiState", () => {
           status: "pending",
         },
       ],
+      sendDraft: {
+        networkId: "ethereum",
+        assetId: "native",
+        recipientAddress: "0x2222222222222222222222222222222222222222",
+        amount: "1.25",
+      },
     });
 
     expect(uiState.loadPersistedUiState()).toMatchObject({
@@ -62,6 +68,12 @@ describe("uiState", () => {
     });
     expect(uiState.loadWalletScopedUiState("account-1")).toMatchObject({
       recentActivity: [{ id: "activity-1" }],
+      sendDraft: {
+        networkId: "ethereum",
+        assetId: "native",
+        recipientAddress: "0x2222222222222222222222222222222222222222",
+        amount: "1.25",
+      },
     });
 
     uiState.clearWalletScopedUiState("account-1");

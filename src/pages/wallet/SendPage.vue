@@ -11,6 +11,7 @@ import {
   estimateTransferPreview,
   fetchPortfolioSnapshot,
 } from "../../services/evm";
+import { loadWalletScopedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import {
   prepareTransferConfirmation,
   signTransferTransaction,
@@ -21,8 +22,8 @@ import { useSessionStore } from "../../stores/session";
 import { useWalletStore } from "../../stores/wallet";
 import type { NetworkConfig } from "../../types/network";
 import type { TransferErrorFeedback, TransferPreview } from "../../types/portfolio";
-import type { AddressBookEntry, WalletAddress, WalletHex } from "../../types/wallet";
-import { formatDateTime, formatRelativeTime, formatTokenAmount, shortenAddress } from "../../utils/format";
+import type { WalletAddress, WalletHex } from "../../types/wallet";
+import { formatTokenAmount, shortenAddress } from "../../utils/format";
 
 const route = useRoute();
 const router = useRouter();
@@ -32,14 +33,11 @@ const sessionStore = useSessionStore();
 const walletStore = useWalletStore();
 
 const { activeNetwork } = storeToRefs(networksStore);
-const { accountCount, activeAccountId, primaryAddress, shellMode } = storeToRefs(sessionStore);
-const { recentActivity } = storeToRefs(walletStore);
+const { activeAccountId, primaryAddress, shellMode } = storeToRefs(sessionStore);
 
 const selectedAssetId = ref("native");
 const recipientAddress = ref("");
 const amount = ref("");
-const contactLabel = ref("");
-const contactNote = ref("");
 const walletPassword = ref("");
 const formErrors = ref<string[]>([]);
 const estimateFeedback = ref<TransferErrorFeedback | null>(null);
@@ -53,10 +51,6 @@ const pasteFeedback = ref<null | {
   message: string;
 }>(null);
 const amountFeedback = ref<null | {
-  tone: "success" | "error";
-  message: string;
-}>(null);
-const contactFeedback = ref<null | {
   tone: "success" | "error";
   message: string;
 }>(null);
@@ -112,46 +106,9 @@ const activeTokens = computed(() => walletStore.tokensForNetwork(activeNetwork.v
 const snapshot = computed(() =>
   portfolioStore.getSnapshot(activeNetwork.value.id, primaryAddress.value || null),
 );
-const savedContacts = computed(() => walletStore.contactsForNetwork(activeNetwork.value.id).slice(0, 4));
-const recentRecipients = computed(() => {
-  const seenAddresses = new Set<string>();
-
-  return recentActivity.value
-    .filter(
-      (item) =>
-        isActivityForCurrentAccount(item) &&
-        item.networkId === activeNetwork.value.id &&
-        item.recipientAddress &&
-        item.recipientAddress !== primaryAddress.value,
-    )
-    .reduce<
-      Array<{
-        address: WalletAddress;
-        assetId?: string;
-        assetSymbol?: string;
-        amount?: string;
-        createdAt?: string;
-      }>
-    >((entries, item) => {
-      const normalizedAddress = item.recipientAddress!.toLowerCase();
-
-      if (seenAddresses.has(normalizedAddress)) {
-        return entries;
-      }
-
-      seenAddresses.add(normalizedAddress);
-      entries.push({
-        address: item.recipientAddress!,
-        assetId: item.assetId,
-        assetSymbol: item.assetSymbol,
-        amount: item.amount,
-        createdAt: item.createdAt,
-      });
-
-      return entries;
-    }, [])
-    .slice(0, 4);
-});
+const persistedSendDraft = computed(() =>
+  loadWalletScopedUiState(activeAccountId.value).sendDraft,
+);
 const assetOptions = computed(() => [
   {
     id: "native",
@@ -219,36 +176,12 @@ const selectedAssetBalanceSummary = computed(() => {
 
   return `${selectedAssetBalanceLabel.value} ${selectedAsset.value.symbol}`;
 });
-const selectedAssetSyncLabel = computed(() => {
-  if (snapshot.value.status === "loading") {
-    return "同步中";
-  }
-
-  if (snapshot.value.status === "error") {
-    return "同步失败";
-  }
-
-  if (snapshot.value.status === "ready") {
-    return `已同步 · ${formatDateTime(snapshot.value.lastSyncedAt)}`;
-  }
-
-  return "待同步";
-});
 const selectedAssetParsedBalance = computed(() => {
   if (!selectedAsset.value) {
     return null;
   }
 
   return parseStoredBalance(selectedAssetBalance.value, selectedAsset.value.decimals);
-});
-const matchedSavedContact = computed(() => {
-  const normalizedRecipient = recipientAddress.value.trim();
-
-  if (!isAddress(normalizedRecipient)) {
-    return null;
-  }
-
-  return walletStore.findAddressBookEntry(activeNetwork.value.id, normalizedRecipient);
 });
 const amountInputResult = computed(() => {
   if (!selectedAsset.value || !amount.value.trim()) {
@@ -313,6 +246,30 @@ watch(
   { immediate: true },
 );
 
+watch(
+  [activeAccountId, () => activeNetwork.value.id],
+  () => {
+    const draft = persistedSendDraft.value;
+
+    if (!draft || draft.networkId !== activeNetwork.value.id) {
+      return;
+    }
+
+    if (!route.query.asset && assetOptions.value.some((asset) => asset.id === draft.assetId)) {
+      selectedAssetId.value = draft.assetId;
+    }
+
+    if (!route.query.recipient && draft.recipientAddress) {
+      recipientAddress.value = draft.recipientAddress;
+    }
+
+    if (draft.amount) {
+      amount.value = draft.amount;
+    }
+  },
+  { immediate: true },
+);
+
 watch(activeNetwork, () => {
   if (!assetOptions.value.some((asset) => asset.id === selectedAssetId.value)) {
     selectedAssetId.value = "native";
@@ -330,32 +287,33 @@ watch([selectedAssetId, recipientAddress, amount, () => activeNetwork.value.id, 
   transferFeedback.value = null;
 });
 
-watch([() => activeNetwork.value.id, recipientAddress], () => {
-  const normalizedRecipient = recipientAddress.value.trim();
+watch(
+  [activeAccountId, () => activeNetwork.value.id, selectedAssetId, recipientAddress, amount],
+  ([accountId, networkId, assetId, nextRecipientAddress, nextAmount]) => {
+    if (!accountId) {
+      return;
+    }
 
-  if (!normalizedRecipient) {
-    contactLabel.value = "";
-    contactNote.value = "";
-    return;
-  }
+    const hasDraftContent =
+      assetId !== "native" ||
+      nextRecipientAddress.trim().length > 0 ||
+      nextAmount.trim().length > 0;
 
-  if (!isAddress(normalizedRecipient)) {
-    contactLabel.value = "";
-    contactNote.value = "";
-    return;
-  }
-
-  const matchedEntry = walletStore.findAddressBookEntry(activeNetwork.value.id, normalizedRecipient);
-
-  if (!matchedEntry) {
-    contactLabel.value = "";
-    contactNote.value = "";
-    return;
-  }
-
-  contactLabel.value = matchedEntry.label;
-  contactNote.value = matchedEntry.note;
-});
+    patchWalletScopedUiState(accountId, {
+      sendDraft: hasDraftContent
+        ? {
+            networkId,
+            assetId,
+            recipientAddress: nextRecipientAddress,
+            amount: nextAmount,
+          }
+        : undefined,
+    });
+  },
+  {
+    immediate: true,
+  },
+);
 
 watch([activeNetwork, primaryAddress, activeTokens], () => {
   void refreshBalanceContext();
@@ -369,10 +327,6 @@ onBeforeUnmount(() => {
   if (amountFeedbackTimer) {
     window.clearTimeout(amountFeedbackTimer);
   }
-
-  if (contactFeedbackTimer) {
-    window.clearTimeout(contactFeedbackTimer);
-  }
 });
 
 onMounted(() => {
@@ -380,43 +334,8 @@ onMounted(() => {
 });
 
 const isTauriRuntime = computed(() => shellMode.value === "tauri");
-const estimateStageLabel = computed(() =>
-  estimateFeedback.value?.stage === "estimate" ? "预估阶段" : "",
-);
-const transferStageLabel = computed(() => {
-  if (!transferFeedback.value) {
-    return "";
-  }
-
-  if (transferFeedback.value.stage === "sign") {
-    return "签名阶段";
-  }
-
-  return "广播阶段";
-});
 let pasteFeedbackTimer: number | null = null;
 let amountFeedbackTimer: number | null = null;
-let contactFeedbackTimer: number | null = null;
-
-function isActivityForCurrentAccount(item: {
-  id: string;
-  accountId?: string;
-  accountAddress?: WalletAddress;
-}) {
-  if (item.id === "empty-state" || !primaryAddress.value) {
-    return false;
-  }
-
-  if (item.accountId) {
-    return item.accountId === activeAccountId.value;
-  }
-
-  if (item.accountAddress) {
-    return item.accountAddress.toLowerCase() === primaryAddress.value.toLowerCase();
-  }
-
-  return accountCount.value <= 1;
-}
 
 function parseAmountInput(value: string, decimals: number) {
   const normalizedValue = value.trim();
@@ -462,37 +381,9 @@ function parseStoredBalance(value: string | null, decimals: number) {
   }
 }
 
-function recentRecipientAmountLabel(entry: {
-  assetSymbol?: string;
-  amount?: string;
-}) {
-  if (entry.amount && entry.assetSymbol) {
-    return `${formatTokenAmount(entry.amount)} ${entry.assetSymbol}`;
-  }
-
-  return entry.assetSymbol ?? "Recent";
-}
-
-function savedContactTimestamp(entry: AddressBookEntry) {
-  return entry.lastUsedAt ?? entry.updatedAt;
-}
-
-function useRecentRecipient(entry: {
-  address: WalletAddress;
-  assetId?: string;
-}) {
-  recipientAddress.value = entry.address;
-
-  if (entry.assetId && assetOptions.value.some((asset) => asset.id === entry.assetId)) {
-    selectedAssetId.value = entry.assetId;
-  }
-}
-
-function useSavedContact(entry: AddressBookEntry) {
-  recipientAddress.value = entry.address;
-  walletStore.markAddressBookEntryUsed({
-    networkId: entry.networkId,
-    address: entry.address,
+function clearSendDraft() {
+  patchWalletScopedUiState(activeAccountId.value, {
+    sendDraft: undefined,
   });
 }
 
@@ -524,25 +415,6 @@ function setAmountFeedback(feedback: {
 }) {
   amountFeedback.value = feedback;
   scheduleAmountFeedbackReset();
-}
-
-function scheduleContactFeedbackReset() {
-  if (contactFeedbackTimer) {
-    window.clearTimeout(contactFeedbackTimer);
-  }
-
-  contactFeedbackTimer = window.setTimeout(() => {
-    contactFeedback.value = null;
-    contactFeedbackTimer = null;
-  }, 2600);
-}
-
-function setContactFeedback(feedback: {
-  tone: "success" | "error";
-  message: string;
-}) {
-  contactFeedback.value = feedback;
-  scheduleContactFeedbackReset();
 }
 
 async function pasteRecipientAddress() {
@@ -620,43 +492,6 @@ async function refreshBalanceContext() {
       isRefreshingBalance.value = false;
     }
   }
-}
-
-function saveCurrentRecipientAsContact() {
-  const hadExistingEntry = Boolean(matchedSavedContact.value);
-  const result = walletStore.upsertAddressBookEntry({
-    networkId: activeNetwork.value.id,
-    label: contactLabel.value,
-    address: recipientAddress.value,
-    note: contactNote.value,
-  });
-
-  if (!result.ok) {
-    setContactFeedback({
-      tone: "error",
-      message: result.errors[0] ?? "当前联系人无法保存",
-    });
-    return;
-  }
-
-  setContactFeedback({
-    tone: "success",
-    message: hadExistingEntry ? "联系人已更新" : "联系人已保存到地址簿",
-  });
-}
-
-function removeCurrentRecipientContact() {
-  if (!matchedSavedContact.value) {
-    return;
-  }
-
-  walletStore.removeAddressBookEntry(matchedSavedContact.value.id);
-  contactLabel.value = "";
-  contactNote.value = "";
-  setContactFeedback({
-    tone: "success",
-    message: "联系人已从地址簿移除",
-  });
 }
 
 async function fillMaxAmount() {
@@ -1057,6 +892,7 @@ async function signAndBroadcast() {
       address: nextConfirmation.recipientAddress,
     });
 
+    clearSendDraft();
     walletPassword.value = "";
 
     await router.push({
@@ -1076,12 +912,20 @@ async function signAndBroadcast() {
 
 <template>
   <WalletChrome
-    eyebrow="Send"
-    title="发送页已经接到真实签名广播。"
-    subtitle="当前只支持 Native Token 与 ERC20 Token。签名在本地 Tauri Core 内完成，发送时需要再次输入钱包密码。"
+    :show-hero="false"
+    :show-nav="false"
   >
-    <section class="page-grid page-grid--2">
-      <SectionCard title="Send Form" description="当前支持 Native Token 与 ERC20">
+    <section class="page-grid page-grid--1">
+      <SectionCard title="发送">
+        <template #header>
+          <div class="section-card__actions">
+            <span class="section-card__meta">{{ activeNetwork.name }}</span>
+            <RouterLink class="button button--ghost button--small" to="/wallet">
+              返回
+            </RouterLink>
+          </div>
+        </template>
+
         <form class="form-grid" @submit.prevent="buildConfirmation">
           <label class="field">
             <span>资产</span>
@@ -1093,21 +937,14 @@ async function signAndBroadcast() {
           </label>
 
           <section v-if="selectedAsset" class="form-summary">
-            <div class="chip-row">
-              <span class="status-chip status-chip--accent">{{ selectedAsset.symbol }}</span>
-              <span class="status-chip">
-                {{ selectedAsset.type === "native" ? "Native Token" : "ERC20 Token" }}
-              </span>
-              <span class="status-chip">{{ activeNetwork.name }}</span>
-            </div>
             <div class="key-value-list">
               <div class="key-value-row">
                 <span>可用余额</span>
                 <strong>{{ selectedAssetBalanceSummary }}</strong>
               </div>
               <div class="key-value-row">
-                <span>余额同步</span>
-                <strong>{{ selectedAssetSyncLabel }}</strong>
+                <span>网络</span>
+                <strong>{{ activeNetwork.name }}</strong>
               </div>
             </div>
           </section>
@@ -1129,6 +966,9 @@ async function signAndBroadcast() {
             >
               {{ isFillingMax ? "计算 Max..." : "Max" }}
             </button>
+            <RouterLink class="button button--ghost button--small" to="/settings/address-book">
+              地址簿
+            </RouterLink>
             <span
               v-if="amountFeedback"
               :class="[
@@ -1172,106 +1012,6 @@ async function signAndBroadcast() {
             </span>
           </div>
 
-          <div v-if="savedContacts.length" class="card-stack">
-            <div class="form-actions form-actions--compact">
-              <p class="helper-text">地址簿联系人：点击后可直接回填收款地址</p>
-              <RouterLink class="button button--ghost button--small" to="/settings/address-book">
-                管理地址簿
-              </RouterLink>
-            </div>
-            <button
-              v-for="entry in savedContacts"
-              :key="entry.id"
-              class="token-row token-row--selectable"
-              type="button"
-              :disabled="isBroadcasting"
-              @click="useSavedContact(entry)"
-            >
-              <div class="token-row__content">
-                <strong>{{ entry.label }}</strong>
-                <p class="token-row__address">{{ shortenAddress(entry.address) }} · {{ entry.address }}</p>
-                <p v-if="entry.note">{{ entry.note }}</p>
-              </div>
-              <div class="token-row__meta">
-                <strong class="token-row__timestamp">
-                  {{ entry.lastUsedAt ? `${formatRelativeTime(entry.lastUsedAt)} 使用` : "未使用" }}
-                </strong>
-                <span class="helper-text">{{ formatDateTime(savedContactTimestamp(entry)) }}</span>
-              </div>
-            </button>
-          </div>
-
-          <section class="form-summary">
-            <div class="form-actions form-actions--compact">
-              <p class="helper-text">
-                {{ matchedSavedContact ? "当前收款地址已在地址簿中，可直接更新标签或备注。" : "将当前收款地址保存为正式联系人。" }}
-              </p>
-              <RouterLink class="button button--ghost button--small" to="/settings/address-book">
-                地址簿详情
-              </RouterLink>
-            </div>
-
-            <label class="field">
-              <span>联系人名称</span>
-              <input v-model="contactLabel" autocomplete="off" placeholder="例如：Treasury / Exchange" />
-            </label>
-
-            <label class="field">
-              <span>备注</span>
-              <textarea
-                v-model="contactNote"
-                placeholder="例如：业务打款地址 / 交易所充值地址"
-                rows="2"
-              />
-            </label>
-
-            <p
-              v-if="contactFeedback"
-              :class="[
-                'helper-text',
-                contactFeedback.tone === 'error' ? 'helper-text--error' : 'helper-text--success',
-              ]"
-            >
-              {{ contactFeedback.message }}
-            </p>
-
-            <div class="form-actions">
-              <button class="button button--secondary button--small" type="button" @click="saveCurrentRecipientAsContact">
-                {{ matchedSavedContact ? "更新联系人" : "保存联系人" }}
-              </button>
-              <button
-                v-if="matchedSavedContact"
-                class="button button--danger button--small"
-                type="button"
-                @click="removeCurrentRecipientContact"
-              >
-                移除联系人
-              </button>
-            </div>
-          </section>
-
-          <div v-if="recentRecipients.length" class="card-stack">
-            <p class="helper-text">最近收款人：点击后可直接回填地址</p>
-            <button
-              v-for="entry in recentRecipients"
-              :key="entry.address"
-              class="token-row token-row--selectable"
-              type="button"
-              :disabled="isBroadcasting"
-              @click="useRecentRecipient(entry)"
-            >
-              <div class="token-row__content">
-                <strong>{{ shortenAddress(entry.address) }}</strong>
-                <p>{{ activeNetwork.name }} · {{ recentRecipientAmountLabel(entry) }}</p>
-              </div>
-              <div class="token-row__meta">
-                <strong class="token-row__timestamp">{{ formatRelativeTime(entry.createdAt) }}</strong>
-                <span class="helper-text">{{ formatDateTime(entry.createdAt) }}</span>
-              </div>
-            </button>
-            <p class="helper-text">只会回填地址，金额仍需要你手动确认。</p>
-          </div>
-
           <label class="field">
             <span>数量</span>
             <input
@@ -1303,25 +1043,11 @@ async function signAndBroadcast() {
           </div>
         </form>
       </SectionCard>
-
-      <SectionCard title="Current Network" description="发送会基于当前激活网络">
-        <p class="metric-value">{{ activeNetwork.name }}</p>
-        <p>Chain ID {{ activeNetwork.chainId }}</p>
-        <div class="form-actions">
-          <RouterLink class="button button--secondary" to="/settings/networks">
-            切换网络
-          </RouterLink>
-          <RouterLink class="button button--ghost" to="/wallet">
-            返回首页
-          </RouterLink>
-        </div>
-      </SectionCard>
     </section>
 
     <section v-if="estimateFeedback" class="page-grid page-grid--1">
-      <SectionCard title="Estimate Feedback" :description="`${estimateStageLabel}返回的诊断结果`" tone="warning">
+      <SectionCard title="估算失败" tone="warning">
         <div class="chip-row">
-          <span class="status-chip status-chip--accent">{{ estimateStageLabel }}</span>
           <span class="status-chip">{{ estimateFeedback.title }}</span>
         </div>
         <p class="helper-text helper-text--error">{{ estimateFeedback.message }}</p>
@@ -1332,32 +1058,40 @@ async function signAndBroadcast() {
     </section>
 
     <section v-if="confirmation" class="page-grid page-grid--1">
-      <SectionCard
-        title="Confirmation Preview"
-        description="本地 Tauri Core 会用钱包密码解锁 Stronghold 并签名，私钥不会出网。"
-      >
-        <ul class="bullet-list">
-          <li>资产：{{ confirmation.assetLabel }}</li>
-          <li>类型：{{ confirmation.assetType }}</li>
-          <li>网络：{{ confirmation.networkName }}</li>
-          <li>地址：{{ confirmation.recipientAddress }}</li>
-          <li>数量：{{ confirmation.amount }}</li>
-          <li>Nonce：{{ confirmation.gas.nonce }}</li>
-          <li v-if="confirmation.contractAddress">合约：{{ confirmation.contractAddress }}</li>
-          <li>Gas Limit：{{ confirmation.gas.gasLimit }}</li>
-          <li v-if="confirmation.gas.feeMode === 'legacy' && confirmation.gas.gasPriceGwei">
-            Gas Price：{{ confirmation.gas.gasPriceGwei }} gwei
-          </li>
-          <li v-if="confirmation.gas.maxFeePerGasGwei">
-            Max Fee：{{ confirmation.gas.maxFeePerGasGwei }} gwei
-          </li>
-          <li v-if="confirmation.gas.maxPriorityFeePerGasGwei">
-            Priority Fee：{{ confirmation.gas.maxPriorityFeePerGasGwei }} gwei
-          </li>
-          <li v-if="confirmation.gas.estimatedNetworkFee">
-            预计网络费：{{ confirmation.gas.estimatedNetworkFee }} {{ confirmation.networkSymbol }}
-          </li>
-        </ul>
+      <SectionCard title="确认">
+        <div class="key-value-list">
+          <div class="key-value-row">
+            <span>资产</span>
+            <strong>{{ confirmation.assetLabel }}</strong>
+          </div>
+          <div class="key-value-row">
+            <span>网络</span>
+            <strong>{{ confirmation.networkName }}</strong>
+          </div>
+          <div class="key-value-row">
+            <span>地址</span>
+            <strong>{{ confirmation.recipientAddress }}</strong>
+          </div>
+          <div class="key-value-row">
+            <span>数量</span>
+            <strong>{{ confirmation.amount }}</strong>
+          </div>
+          <div class="key-value-row">
+            <span>Gas</span>
+            <strong>{{ confirmation.gas.gasLimit }}</strong>
+          </div>
+          <div
+            v-if="confirmation.assetType === 'erc20' && confirmation.contractAddress"
+            class="key-value-row"
+          >
+            <span>合约</span>
+            <strong>{{ confirmation.contractAddress }}</strong>
+          </div>
+          <div v-if="confirmation.gas.estimatedNetworkFee" class="key-value-row">
+            <span>网络费</span>
+            <strong>{{ confirmation.gas.estimatedNetworkFee }} {{ confirmation.networkSymbol }}</strong>
+          </div>
+        </div>
         <label class="field">
           <span>钱包密码</span>
           <input
@@ -1368,11 +1102,10 @@ async function signAndBroadcast() {
           />
         </label>
         <p v-if="!isTauriRuntime" class="helper-text">
-          浏览器预览模式只保留 UI 流程，真实签名与广播请使用 `pnpm tauri dev`。
+          浏览器预览模式不执行真实签名。
         </p>
         <section v-if="transferFeedback" class="card-stack">
           <div class="chip-row">
-            <span class="status-chip status-chip--accent">{{ transferStageLabel }}</span>
             <span class="status-chip">{{ transferFeedback.title }}</span>
           </div>
           <p class="helper-text helper-text--error">{{ transferFeedback.message }}</p>

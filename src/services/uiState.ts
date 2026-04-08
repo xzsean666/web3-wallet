@@ -1,6 +1,6 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import type { NetworkConfig } from "../types/network";
-import type { ActivityItem, AddressBookEntry, TrackedToken } from "../types/wallet";
+import type { ActivityItem, AddressBookEntry, SendDraft, TrackedToken } from "../types/wallet";
 
 const UI_STATE_STORAGE_KEY = "web3-wallet/ui-state/v2";
 const LEGACY_UI_STATE_STORAGE_KEY = "web3-wallet/ui-state/v1";
@@ -15,6 +15,7 @@ export interface WalletScopedUiState {
   customTokens?: TrackedToken[];
   recentActivity?: ActivityItem[];
   addressBook?: AddressBookEntry[];
+  sendDraft?: SendDraft;
 }
 
 export interface PersistedUiStateEnvelope {
@@ -72,6 +73,26 @@ function extractGlobalState(value: Record<string, unknown>): PersistedUiState {
   };
 }
 
+function extractSendDraft(value: unknown): SendDraft | undefined {
+  if (!isPlainObject(value)) {
+    return undefined;
+  }
+
+  return (
+    typeof value.networkId === "string" &&
+    typeof value.assetId === "string" &&
+    typeof value.recipientAddress === "string" &&
+    typeof value.amount === "string"
+  )
+    ? {
+        networkId: value.networkId,
+        assetId: value.assetId,
+        recipientAddress: value.recipientAddress,
+        amount: value.amount,
+      }
+    : undefined;
+}
+
 function extractWalletScopedState(value: Record<string, unknown>): WalletScopedUiState {
   return {
     customTokens: Array.isArray(value.customTokens)
@@ -83,6 +104,7 @@ function extractWalletScopedState(value: Record<string, unknown>): WalletScopedU
     addressBook: Array.isArray(value.addressBook)
       ? (value.addressBook as AddressBookEntry[])
       : undefined,
+    sendDraft: extractSendDraft(value.sendDraft),
   };
 }
 
@@ -197,7 +219,8 @@ function walletScopedStateHasData(state: WalletScopedUiState) {
   return Boolean(
     state.customTokens?.length ||
       state.recentActivity?.length ||
-      state.addressBook?.length,
+      state.addressBook?.length ||
+      state.sendDraft,
   );
 }
 
@@ -382,12 +405,17 @@ export function clearNetworkScopedUiState(networkId: string) {
         addressBook: scopedState.addressBook?.filter(
           (entry) => entry.networkId !== networkId,
         ),
+        sendDraft:
+          scopedState.sendDraft?.networkId === networkId
+            ? undefined
+            : scopedState.sendDraft,
       };
 
       if (
         nextScopedState.customTokens?.length !== scopedState.customTokens?.length ||
         nextScopedState.recentActivity?.length !== scopedState.recentActivity?.length ||
-        nextScopedState.addressBook?.length !== scopedState.addressBook?.length
+        nextScopedState.addressBook?.length !== scopedState.addressBook?.length ||
+        nextScopedState.sendDraft !== scopedState.sendDraft
       ) {
         hasChanges = true;
       }

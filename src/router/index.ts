@@ -59,6 +59,12 @@ export const router = createRouter({
       meta: { requiresUnlocked: true },
     },
     {
+      path: "/wallet/activity",
+      name: "wallet-activity",
+      component: () => import("../pages/wallet/ActivityPage.vue"),
+      meta: { requiresUnlocked: true },
+    },
+    {
       path: "/wallet/token/add",
       name: "wallet-token-add",
       component: () => import("../pages/wallet/AddTokenPage.vue"),
