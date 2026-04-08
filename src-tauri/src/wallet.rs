@@ -40,14 +40,21 @@ type WalletCommandResult<T> = Result<T, WalletError>;
 pub struct WalletRuntimeState {
     mutation_lock: Mutex<()>,
     pending_onboarding: Mutex<Option<PendingOnboarding>>,
+    pending_transfer_confirmation: Mutex<Option<PendingTransferConfirmation>>,
 }
 
+#[derive(Debug, Clone)]
 struct PendingOnboarding {
     backup_access_token: String,
     draft: PendingWalletDraft,
     has_revealed_backup_phrase: bool,
-    password: Zeroizing<String>,
-    mnemonic: Zeroizing<String>,
+    snapshot_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct PendingTransferConfirmation {
+    confirmation_id: String,
+    request: PreparedTransferRequest,
 }
 
 #[derive(Debug)]
@@ -221,6 +228,7 @@ pub struct UnlockWalletRequest {
 #[serde(rename_all = "camelCase")]
 pub struct GetPendingBackupPhraseRequest {
     backup_access_token: String,
+    password: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,7 +273,7 @@ pub enum FeeMode {
     Eip1559,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TransferAsset {
     Native,
@@ -275,11 +283,10 @@ pub enum TransferAsset {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SignTransferRequest {
+pub struct PreparedTransferRequest {
     account_id: String,
-    password: String,
     chain_id: String,
     nonce: String,
     gas_limit: String,
@@ -290,6 +297,20 @@ pub struct SignTransferRequest {
     max_fee_per_gas_wei: Option<String>,
     max_priority_fee_per_gas_wei: Option<String>,
     asset: TransferAsset,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedTransferSession {
+    confirmation_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignTransferRequest {
+    account_id: String,
+    password: String,
+    confirmation_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -438,6 +459,10 @@ pub enum WalletError {
     MissingField(&'static str),
     #[error("EIP-1559 费用参数不合法")]
     InvalidEip1559Fees,
+    #[error("确认摘要已过期，请重新生成确认摘要后再继续签名")]
+    MissingPreparedTransferConfirmation,
+    #[error("确认摘要与当前账号不匹配，请重新生成确认摘要后再继续签名")]
+    InvalidPreparedTransferConfirmation,
     #[error("交易签名失败: {0}")]
     SigningFailed(String),
 }
@@ -458,6 +483,9 @@ pub fn create_wallet(
     request: CreateWalletRequest,
 ) -> WalletCommandResult<PendingWalletSession> {
     let request = normalize_create_request(request)?;
+    if get_pending_onboarding(&app, &state)?.is_some() {
+        return Err(WalletError::PendingOnboardingInProgress);
+    }
 
     let mnemonic = Mnemonic::generate_in(Language::English, 12).map_err(WalletError::from)?;
     let mnemonic_phrase = Zeroizing::new(mnemonic.to_string());
@@ -465,9 +493,12 @@ pub fn create_wallet(
     let address = address_from_private_key(private_key.as_ref())?;
     ensure_wallet_address_is_unique(&app, &address)?;
     let account_id = build_account_id(&address);
+    let backup_access_token = generate_pending_backup_access_token();
+    let snapshot_path = pending_snapshot_path(&app)?;
+    reset_snapshot_file(&snapshot_path)?;
 
     let draft = PendingWalletDraft {
-        account_id,
+        account_id: account_id.clone(),
         derivation_index: 0,
         wallet_label: request.wallet_label,
         address,
@@ -477,20 +508,25 @@ pub fn create_wallet(
         created_at: now_rfc3339(),
     };
 
-    let backup_access_token = generate_pending_backup_access_token();
     let pending = PendingOnboarding {
         backup_access_token: backup_access_token.clone(),
         draft: draft.clone(),
         has_revealed_backup_phrase: false,
-        password: Zeroizing::new(request.password),
-        mnemonic: mnemonic_phrase,
+        snapshot_path: snapshot_path.to_string_lossy().into_owned(),
     };
 
-    let mut guard = state.pending_onboarding.lock().unwrap();
-    if guard.is_some() {
-        return Err(WalletError::PendingOnboardingInProgress);
+    store_secret_snapshot(
+        &app,
+        &request.password,
+        mnemonic_phrase.as_bytes(),
+        SecretKind::Mnemonic,
+        &snapshot_path,
+    )?;
+    if let Err(error) = save_pending_onboarding(&app, &pending) {
+        let _ = reset_snapshot_file(&snapshot_path);
+        return Err(error);
     }
-    *guard = Some(pending);
+    *state.pending_onboarding.lock().unwrap() = Some(pending);
 
     Ok(PendingWalletSession {
         draft,
@@ -499,24 +535,23 @@ pub fn create_wallet(
 }
 
 #[tauri::command]
-pub fn load_pending_wallet_draft(
+pub fn load_pending_wallet_session(
+    app: AppHandle,
     state: State<'_, WalletRuntimeState>,
-) -> WalletCommandResult<Option<PendingWalletDraft>> {
-    Ok(state
-        .pending_onboarding
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|pending| pending.draft.clone()))
+) -> WalletCommandResult<Option<PendingWalletSession>> {
+    Ok(get_pending_onboarding(&app, &state)?.map(|pending| PendingWalletSession {
+        draft: pending.draft,
+        backup_access_token: pending.backup_access_token,
+    }))
 }
 
 #[tauri::command]
 pub fn get_pending_backup_phrase(
+    app: AppHandle,
     state: State<'_, WalletRuntimeState>,
     request: GetPendingBackupPhraseRequest,
 ) -> WalletCommandResult<String> {
-    let mut guard = state.pending_onboarding.lock().unwrap();
-    let pending = guard.as_mut().ok_or(WalletError::NoPendingWallet)?;
+    let pending = get_pending_onboarding(&app, &state)?.ok_or(WalletError::NoPendingWallet)?;
 
     if !matches!(pending.draft.secret_kind, SecretKind::Mnemonic) {
         return Err(WalletError::InvalidPendingWallet);
@@ -526,16 +561,18 @@ pub fn get_pending_backup_phrase(
         return Err(WalletError::InvalidPendingBackupAccess);
     }
 
-    pending.has_revealed_backup_phrase = true;
+    let mnemonic = load_pending_mnemonic(&app, &pending, &request.password)?;
+    mark_pending_onboarding_revealed(&app, &state)?;
 
-    Ok(pending.mnemonic.to_string())
+    Ok(mnemonic)
 }
 
 #[tauri::command]
-pub fn cancel_pending_wallet(state: State<'_, WalletRuntimeState>) -> WalletCommandResult<()> {
-    let mut guard = state.pending_onboarding.lock().unwrap();
-    *guard = None;
-    Ok(())
+pub fn cancel_pending_wallet(
+    app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
+) -> WalletCommandResult<()> {
+    clear_pending_onboarding(&app, &state)
 }
 
 #[tauri::command]
@@ -544,56 +581,56 @@ pub fn finalize_pending_wallet(
     state: State<'_, WalletRuntimeState>,
     request: FinalizePendingWalletRequest,
 ) -> WalletCommandResult<WalletProfile> {
-    let pending = {
-        let mut guard = state.pending_onboarding.lock().unwrap();
-        let pending = guard.as_ref().ok_or(WalletError::NoPendingWallet)?;
+    let pending = get_pending_onboarding(&app, &state)?.ok_or(WalletError::NoPendingWallet)?;
 
-        if pending.backup_access_token != request.backup_access_token {
-            return Err(WalletError::InvalidPendingBackupAccess);
-        }
+    if pending.backup_access_token != request.backup_access_token {
+        return Err(WalletError::InvalidPendingBackupAccess);
+    }
 
-        if !pending.has_revealed_backup_phrase {
-            return Err(WalletError::BackupPhraseRevealRequired);
-        }
+    if !pending.has_revealed_backup_phrase {
+        return Err(WalletError::BackupPhraseRevealRequired);
+    }
 
-        if !request.confirmed_backup {
-            return Err(WalletError::BackupConfirmationRequired);
-        }
+    if !request.confirmed_backup {
+        return Err(WalletError::BackupConfirmationRequired);
+    }
 
-        guard.take().ok_or(WalletError::NoPendingWallet)?
-    };
     let _mutation_guard = state.mutation_lock.lock().unwrap();
 
     ensure_wallet_address_is_unique(&app, &pending.draft.address)?;
+    let pending_snapshot_path = validated_snapshot_path(&app, &pending.snapshot_path)?;
+    let final_snapshot_path = snapshot_path_for_account(&app, &pending.draft.account_id)?;
+    reset_snapshot_file(&final_snapshot_path)?;
+    fs::rename(&pending_snapshot_path, &final_snapshot_path)?;
+    let finalized_metadata = StoredWalletMetadata {
+        account_id: pending.draft.account_id.clone(),
+        derivation_group_id: pending.draft.account_id.clone(),
+        derivation_index: pending.draft.derivation_index,
+        wallet_label: pending.draft.wallet_label.clone(),
+        address: pending.draft.address.clone(),
+        source: WalletSource::Created,
+        secret_kind: SecretKind::Mnemonic,
+        is_biometric_enabled: pending.draft.is_biometric_enabled,
+        has_backed_up_mnemonic: true,
+        created_at: pending.draft.created_at.clone(),
+        last_unlocked_at: Some(now_rfc3339()),
+        snapshot_path: final_snapshot_path.to_string_lossy().into_owned(),
+    };
 
-    let result = persist_wallet_secret(
+    let result = save_wallet_metadata(
         &app,
-        &pending.password,
-        pending.mnemonic.as_bytes(),
-        SecretKind::Mnemonic,
-        &StoredWalletMetadata {
-            account_id: pending.draft.account_id.clone(),
-            derivation_group_id: pending.draft.account_id.clone(),
-            derivation_index: pending.draft.derivation_index,
-            wallet_label: pending.draft.wallet_label.clone(),
-            address: pending.draft.address.clone(),
-            source: WalletSource::Created,
-            secret_kind: SecretKind::Mnemonic,
-            is_biometric_enabled: pending.draft.is_biometric_enabled,
-            has_backed_up_mnemonic: true,
-            created_at: pending.draft.created_at.clone(),
-            last_unlocked_at: Some(now_rfc3339()),
-            snapshot_path: snapshot_path_for_account(&app, &pending.draft.account_id)?
-                .to_string_lossy()
-                .into_owned(),
-        },
+        &finalized_metadata,
     );
 
     match result {
-        Ok(profile) => Ok(profile),
+        Ok(()) => {
+            save_active_account_id(&app, Some(&pending.draft.account_id))?;
+            clear_pending_onboarding_record(&app)?;
+            *state.pending_onboarding.lock().unwrap() = None;
+            Ok(finalized_metadata.into())
+        }
         Err(error) => {
-            let mut guard = state.pending_onboarding.lock().unwrap();
-            *guard = Some(pending);
+            let _ = fs::rename(&final_snapshot_path, &pending_snapshot_path);
             Err(error)
         }
     }
@@ -894,14 +931,48 @@ pub fn update_biometric_setting(
 }
 
 #[tauri::command]
+pub fn prepare_transfer_confirmation(
+    app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
+    request: PreparedTransferRequest,
+) -> WalletCommandResult<PreparedTransferSession> {
+    load_wallet_metadata(&app, &request.account_id)?.ok_or(WalletError::WalletNotInitialized)?;
+    build_transfer_transaction(&request)?;
+
+    let confirmation_id = generate_pending_backup_access_token();
+    *state.pending_transfer_confirmation.lock().unwrap() = Some(PendingTransferConfirmation {
+        confirmation_id: confirmation_id.clone(),
+        request,
+    });
+
+    Ok(PreparedTransferSession { confirmation_id })
+}
+
+#[tauri::command]
 pub fn sign_transfer_transaction(
     app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
     request: SignTransferRequest,
 ) -> WalletCommandResult<SignedTransferPayload> {
-    let metadata = load_wallet_metadata(&app, &request.account_id)?
+    let prepared_confirmation = state
+        .pending_transfer_confirmation
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or(WalletError::MissingPreparedTransferConfirmation)?;
+
+    if prepared_confirmation.confirmation_id != request.confirmation_id {
+        return Err(WalletError::MissingPreparedTransferConfirmation);
+    }
+
+    if prepared_confirmation.request.account_id != request.account_id {
+        return Err(WalletError::InvalidPreparedTransferConfirmation);
+    }
+
+    let metadata = load_wallet_metadata(&app, &prepared_confirmation.request.account_id)?
         .ok_or(WalletError::WalletNotInitialized)?;
     let private_key = load_private_key_for_signing(&app, &metadata, &request.password)?;
-    let tx = build_transfer_transaction(&request)?;
+    let tx = build_transfer_transaction(&prepared_confirmation.request)?;
 
     let signer = PrivateKeySigner::from_slice(private_key.as_ref())
         .map_err(|_| WalletError::InvalidPrivateKey)?;
@@ -910,6 +981,7 @@ pub fn sign_transfer_transaction(
         .map_err(|error| WalletError::SigningFailed(error.to_string()))?;
     let envelope: TxEnvelope = tx.into_envelope(signature);
     let raw_transaction = envelope.encoded_2718();
+    *state.pending_transfer_confirmation.lock().unwrap() = None;
 
     Ok(SignedTransferPayload {
         raw_transaction: format!("0x{}", hex::encode(raw_transaction)),
@@ -1204,35 +1276,15 @@ fn load_secret_record(
 ) -> Result<(SecretKind, Zeroizing<Vec<u8>>), WalletError> {
     let snapshot_path = validated_snapshot_path(app, &metadata.snapshot_path)?;
     let paths = wallet_paths(app)?;
-
-    let stronghold = open_stronghold(&snapshot_path, password, &paths.salt_path)
-        .map_err(normalize_secret_access_error)?;
-    let client = stronghold
-        .load_client(STRONGHOLD_CLIENT.to_vec())
-        .map_err(|_| WalletError::MissingSigningSecret)?;
-    let secret_record = client
-        .store()
-        .get(STRONGHOLD_RECORD)
-        .map_err(|error| WalletError::Stronghold(error.to_string()))?
-        .ok_or(WalletError::MissingSigningSecret)?;
-    let secret_record = Zeroizing::new(secret_record);
-    let delimiter = secret_record
-        .iter()
-        .position(|byte| *byte == b':')
-        .ok_or(WalletError::InvalidStoredSecret)?;
-    let secret_kind = std::str::from_utf8(&secret_record[..delimiter])
-        .ok()
-        .and_then(|value| SecretKind::from_db_value(value).ok())
-        .ok_or(WalletError::InvalidStoredSecret)?;
+    let (secret_kind, secret_record) =
+        load_secret_from_snapshot_path(&snapshot_path, password, &paths.salt_path)
+            .map_err(normalize_secret_access_error)?;
 
     if secret_kind != metadata.secret_kind {
         return Err(WalletError::InvalidStoredSecret);
     }
 
-    Ok((
-        secret_kind,
-        Zeroizing::new(secret_record[delimiter + 1..].to_vec()),
-    ))
+    Ok((secret_kind, secret_record))
 }
 
 fn normalize_secret_access_error(error: WalletError) -> WalletError {
@@ -1253,7 +1305,7 @@ fn should_mask_unlock_error(error: &WalletError) -> bool {
 }
 
 fn build_transfer_transaction(
-    request: &SignTransferRequest,
+    request: &PreparedTransferRequest,
 ) -> Result<TypedTransaction, WalletError> {
     let chain_id = parse_u64_field("chainId", &request.chain_id)?;
     let nonce = parse_u64_field("nonce", &request.nonce)?;
@@ -1369,10 +1421,33 @@ fn persist_wallet_secret(
     secret_kind: SecretKind,
     metadata: &StoredWalletMetadata,
 ) -> Result<WalletProfile, WalletError> {
-    let paths = wallet_paths(app)?;
     let snapshot_file_path = PathBuf::from(&metadata.snapshot_path);
-    let stronghold = open_stronghold(&snapshot_file_path, password, &paths.salt_path)?;
-    let snapshot_path = iota_stronghold::SnapshotPath::from_path(&snapshot_file_path);
+    store_secret_snapshot(
+        app,
+        password,
+        secret_bytes,
+        secret_kind,
+        &snapshot_file_path,
+    )?;
+
+    save_wallet_metadata(app, metadata)?;
+    save_active_account_id(app, Some(&metadata.account_id))?;
+
+    Ok(load_wallet_metadata(app, &metadata.account_id)?
+        .ok_or_else(|| WalletError::MetadataCorrupted("wallet metadata missing after save".into()))?
+        .into())
+}
+
+fn store_secret_snapshot(
+    app: &AppHandle,
+    password: &str,
+    secret_bytes: &[u8],
+    secret_kind: SecretKind,
+    snapshot_file_path: &Path,
+) -> Result<(), WalletError> {
+    let paths = wallet_paths(app)?;
+    let stronghold = open_stronghold(snapshot_file_path, password, &paths.salt_path)?;
+    let snapshot_path = iota_stronghold::SnapshotPath::from_path(snapshot_file_path);
     let client = match stronghold.load_client(STRONGHOLD_CLIENT.to_vec()) {
         Ok(client) => client,
         Err(_) => stronghold
@@ -1401,12 +1476,41 @@ fn persist_wallet_secret(
         )
         .map_err(|error| WalletError::Stronghold(error.to_string()))?;
 
-    save_wallet_metadata(app, metadata)?;
-    save_active_account_id(app, Some(&metadata.account_id))?;
+    Ok(())
+}
 
-    Ok(load_wallet_metadata(app, &metadata.account_id)?
-        .ok_or_else(|| WalletError::MetadataCorrupted("wallet metadata missing after save".into()))?
-        .into())
+fn load_secret_from_snapshot_path(
+    snapshot_path: &Path,
+    password: &str,
+    salt_path: &Path,
+) -> Result<(SecretKind, Zeroizing<Vec<u8>>), WalletError> {
+    if !snapshot_path.is_file() {
+        return Err(WalletError::InvalidPendingWallet);
+    }
+
+    let stronghold = open_stronghold(snapshot_path, password, salt_path)?;
+    let client = stronghold
+        .load_client(STRONGHOLD_CLIENT.to_vec())
+        .map_err(|_| WalletError::MissingSigningSecret)?;
+    let secret_record = client
+        .store()
+        .get(STRONGHOLD_RECORD)
+        .map_err(|error| WalletError::Stronghold(error.to_string()))?
+        .ok_or(WalletError::MissingSigningSecret)?;
+    let secret_record = Zeroizing::new(secret_record);
+    let delimiter = secret_record
+        .iter()
+        .position(|byte| *byte == b':')
+        .ok_or(WalletError::InvalidStoredSecret)?;
+    let secret_kind = std::str::from_utf8(&secret_record[..delimiter])
+        .ok()
+        .and_then(|value| SecretKind::from_db_value(value).ok())
+        .ok_or(WalletError::InvalidStoredSecret)?;
+
+    Ok((
+        secret_kind,
+        Zeroizing::new(secret_record[delimiter + 1..].to_vec()),
+    ))
 }
 
 fn open_stronghold(
@@ -1587,6 +1691,18 @@ fn snapshot_path_for_account(app: &AppHandle, account_id: &str) -> Result<PathBu
     Ok(managed_snapshot_dir(app)?.join(format!("{account_id}.stronghold")))
 }
 
+fn pending_snapshot_path(app: &AppHandle) -> Result<PathBuf, WalletError> {
+    Ok(managed_snapshot_dir(app)?.join("pending-onboarding.stronghold"))
+}
+
+fn reset_snapshot_file(path: &Path) -> Result<(), WalletError> {
+    if path.is_file() {
+        fs::remove_file(path)?;
+    }
+
+    Ok(())
+}
+
 fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
     let paths = wallet_paths(app)?;
     let connection = Connection::open(paths.metadata_db_path)?;
@@ -1614,6 +1730,20 @@ fn metadata_connection(app: &AppHandle) -> Result<Connection, WalletError> {
         CREATE TABLE IF NOT EXISTS ui_state (
           id INTEGER PRIMARY KEY CHECK (id = 1),
           payload TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_onboarding (
+          id INTEGER PRIMARY KEY CHECK (id = 1),
+          backup_access_token TEXT NOT NULL,
+          account_id TEXT NOT NULL,
+          derivation_index INTEGER NOT NULL DEFAULT 0,
+          wallet_label TEXT NOT NULL,
+          address TEXT NOT NULL,
+          is_biometric_enabled INTEGER NOT NULL,
+          source TEXT NOT NULL,
+          secret_kind TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          has_revealed_backup_phrase INTEGER NOT NULL DEFAULT 0,
+          snapshot_path TEXT NOT NULL
         );
         "#,
     )?;
@@ -1829,6 +1959,164 @@ fn save_active_account_id(app: &AppHandle, account_id: Option<&str>) -> Result<(
         params![account_id],
     )?;
 
+    Ok(())
+}
+
+fn save_pending_onboarding(
+    app: &AppHandle,
+    pending: &PendingOnboarding,
+) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    connection.execute(
+        r#"
+        INSERT INTO pending_onboarding (
+          id,
+          backup_access_token,
+          account_id,
+          derivation_index,
+          wallet_label,
+          address,
+          is_biometric_enabled,
+          source,
+          secret_kind,
+          created_at,
+          has_revealed_backup_phrase,
+          snapshot_path
+        )
+        VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        ON CONFLICT(id) DO UPDATE SET
+          backup_access_token = excluded.backup_access_token,
+          account_id = excluded.account_id,
+          derivation_index = excluded.derivation_index,
+          wallet_label = excluded.wallet_label,
+          address = excluded.address,
+          is_biometric_enabled = excluded.is_biometric_enabled,
+          source = excluded.source,
+          secret_kind = excluded.secret_kind,
+          created_at = excluded.created_at,
+          has_revealed_backup_phrase = excluded.has_revealed_backup_phrase,
+          snapshot_path = excluded.snapshot_path
+        "#,
+        params![
+            &pending.backup_access_token,
+            &pending.draft.account_id,
+            pending.draft.derivation_index as i64,
+            &pending.draft.wallet_label,
+            &pending.draft.address,
+            pending.draft.is_biometric_enabled as i64,
+            pending.draft.source.as_str(),
+            pending.draft.secret_kind.as_str(),
+            &pending.draft.created_at,
+            pending.has_revealed_backup_phrase as i64,
+            &pending.snapshot_path,
+        ],
+    )?;
+
+    Ok(())
+}
+
+fn load_pending_onboarding(app: &AppHandle) -> Result<Option<PendingOnboarding>, WalletError> {
+    let connection = metadata_connection(app)?;
+
+    connection
+        .query_row(
+            r#"
+            SELECT
+              backup_access_token,
+              account_id,
+              derivation_index,
+              wallet_label,
+              address,
+              is_biometric_enabled,
+              source,
+              secret_kind,
+              created_at,
+              has_revealed_backup_phrase,
+              snapshot_path
+            FROM pending_onboarding
+            WHERE id = 1
+            "#,
+            [],
+            |row| {
+                let derivation_index = row.get::<_, i64>(2).and_then(|value| {
+                    u32::try_from(value).map_err(|_| {
+                        to_sql_conversion_error(WalletError::MetadataCorrupted(
+                            "pending onboarding derivation index is out of range".into(),
+                        ))
+                    })
+                })?;
+                let source = WalletSource::from_db_value(&row.get::<_, String>(6)?)
+                    .map_err(to_sql_conversion_error)?;
+                let secret_kind = SecretKind::from_db_value(&row.get::<_, String>(7)?)
+                    .map_err(to_sql_conversion_error)?;
+
+                Ok(PendingOnboarding {
+                    backup_access_token: row.get(0)?,
+                    draft: PendingWalletDraft {
+                        account_id: row.get(1)?,
+                        derivation_index,
+                        wallet_label: row.get(3)?,
+                        address: row.get(4)?,
+                        is_biometric_enabled: row.get::<_, i64>(5)? != 0,
+                        source,
+                        secret_kind,
+                        created_at: row.get(8)?,
+                    },
+                    has_revealed_backup_phrase: row.get::<_, i64>(9)? != 0,
+                    snapshot_path: row.get(10)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
+fn clear_pending_onboarding_record(app: &AppHandle) -> Result<(), WalletError> {
+    let connection = metadata_connection(app)?;
+    connection.execute("DELETE FROM pending_onboarding WHERE id = 1", [])?;
+    Ok(())
+}
+
+fn get_pending_onboarding(
+    app: &AppHandle,
+    state: &State<'_, WalletRuntimeState>,
+) -> Result<Option<PendingOnboarding>, WalletError> {
+    let cached = state.pending_onboarding.lock().unwrap().clone();
+
+    if cached.is_some() {
+        return Ok(cached);
+    }
+
+    let stored = load_pending_onboarding(app)?;
+    *state.pending_onboarding.lock().unwrap() = stored.clone();
+    Ok(stored)
+}
+
+fn mark_pending_onboarding_revealed(
+    app: &AppHandle,
+    state: &State<'_, WalletRuntimeState>,
+) -> Result<(), WalletError> {
+    let mut guard = state.pending_onboarding.lock().unwrap();
+    let pending = guard.as_mut().ok_or(WalletError::NoPendingWallet)?;
+    pending.has_revealed_backup_phrase = true;
+    save_pending_onboarding(app, pending)
+}
+
+fn clear_pending_onboarding(
+    app: &AppHandle,
+    state: &State<'_, WalletRuntimeState>,
+) -> Result<(), WalletError> {
+    let pending = get_pending_onboarding(app, state)?;
+
+    if let Some(pending) = pending {
+        let snapshot_path = validated_snapshot_path(app, &pending.snapshot_path)?;
+        if snapshot_path.is_file() {
+            fs::remove_file(snapshot_path)?;
+        }
+    }
+
+    clear_pending_onboarding_record(app)?;
+    *state.pending_onboarding.lock().unwrap() = None;
     Ok(())
 }
 
@@ -2079,6 +2367,33 @@ fn generate_pending_backup_access_token() -> String {
     let mut rng = thread_rng();
     rng.fill_bytes(&mut random_bytes);
     hex::encode(random_bytes)
+}
+
+fn load_pending_mnemonic(
+    app: &AppHandle,
+    pending: &PendingOnboarding,
+    password: &str,
+) -> Result<String, WalletError> {
+    let snapshot_path = validated_snapshot_path(app, &pending.snapshot_path)?;
+    let (secret_kind, secret_record) =
+        load_secret_from_snapshot_path(&snapshot_path, password, &wallet_paths(app)?.salt_path)
+            .map_err(|error| match error {
+                WalletError::InvalidPendingWallet | WalletError::MissingSigningSecret => {
+                    WalletError::InvalidPendingWallet
+                }
+                other => normalize_secret_access_error(other),
+            })?;
+
+    if secret_kind != SecretKind::Mnemonic {
+        return Err(WalletError::InvalidPendingWallet);
+    }
+
+    let mnemonic_phrase =
+        std::str::from_utf8(secret_record.as_ref()).map_err(|_| WalletError::InvalidPendingWallet)?;
+    let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic_phrase)
+        .map_err(WalletError::from)?;
+
+    Ok(mnemonic.to_string())
 }
 
 fn build_account_id(address: &str) -> String {

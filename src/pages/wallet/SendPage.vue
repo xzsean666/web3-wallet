@@ -11,7 +11,10 @@ import {
   estimateTransferPreview,
   fetchPortfolioSnapshot,
 } from "../../services/evm";
-import { signTransferTransaction } from "../../services/walletBridge";
+import {
+  prepareTransferConfirmation,
+  signTransferTransaction,
+} from "../../services/walletBridge";
 import { useNetworksStore } from "../../stores/networks";
 import { usePortfolioStore } from "../../stores/portfolio";
 import { useSessionStore } from "../../stores/session";
@@ -59,6 +62,7 @@ const contactFeedback = ref<null | {
 }>(null);
 type TransferConfirmation = {
   requestId: number;
+  confirmationId: string;
   accountId: string;
   accountAddress: WalletAddress;
   assetId: string;
@@ -882,8 +886,43 @@ async function buildConfirmation() {
       return;
     }
 
+    const prepared = await prepareTransferConfirmation({
+      accountId: requestAccountId,
+      chainId: String(requestNetwork.chainId),
+      nonce: preview.nonce,
+      gasLimit: preview.gasLimit,
+      recipientAddress: requestRecipientAddress as `0x${string}`,
+      amount: preview.parsedAmount,
+      feeMode: preview.feeMode,
+      gasPriceWei: preview.gasPriceWei,
+      maxFeePerGasWei: preview.maxFeePerGasWei,
+      maxPriorityFeePerGasWei: preview.maxPriorityFeePerGasWei,
+      asset:
+        requestSelectedAsset.type === "native"
+          ? {
+              type: "native",
+            }
+          : {
+              type: "erc20",
+              contractAddress: requestSelectedAsset.contractAddress,
+            },
+    });
+
+    if (
+      requestId !== confirmationRequestId ||
+      activeNetwork.value.id !== requestNetwork.id ||
+      activeAccountId.value !== requestAccountId ||
+      primaryAddress.value !== requestAccountAddress ||
+      recipientAddress.value.trim() !== requestRecipientAddress ||
+      amount.value.trim() !== requestAmount ||
+      selectedAssetId.value !== requestSelectedAsset.id
+    ) {
+      return;
+    }
+
     confirmation.value = {
       ...nextConfirmation,
+      confirmationId: prepared.confirmationId,
       gas: preview,
     };
   } catch (error) {
@@ -964,24 +1003,7 @@ async function signAndBroadcast() {
       signedPayload = await signTransferTransaction({
         accountId: nextConfirmation.accountId,
         password: walletPassword.value,
-        chainId: String(nextConfirmation.chainId),
-        nonce: nextConfirmation.gas.nonce,
-        gasLimit: nextConfirmation.gas.gasLimit,
-        recipientAddress: nextConfirmation.recipientAddress as `0x${string}`,
-        amount: nextConfirmation.gas.parsedAmount,
-        feeMode: nextConfirmation.gas.feeMode,
-        gasPriceWei: nextConfirmation.gas.gasPriceWei,
-        maxFeePerGasWei: nextConfirmation.gas.maxFeePerGasWei,
-        maxPriorityFeePerGasWei: nextConfirmation.gas.maxPriorityFeePerGasWei,
-        asset:
-          nextConfirmation.assetType === "native"
-            ? {
-                type: "native",
-              }
-            : {
-                type: "erc20",
-                contractAddress: nextConfirmation.contractAddress as `0x${string}`,
-              },
+        confirmationId: nextConfirmation.confirmationId,
       });
     } catch (error) {
       transferFeedback.value = describeTransferError({

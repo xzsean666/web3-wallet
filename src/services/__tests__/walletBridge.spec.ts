@@ -42,7 +42,10 @@ describe("walletBridge", () => {
       }),
     ).rejects.toThrow("请先查看助记词");
 
-    const phrase = await walletBridge.getPendingBackupPhrase(pendingSession.backupAccessToken);
+    const phrase = await walletBridge.getPendingBackupPhrase({
+      backupAccessToken: pendingSession.backupAccessToken,
+      password: "super-secret",
+    });
     expect(phrase.split(" ")).toHaveLength(12);
 
     const profile = await walletBridge.finalizePendingWallet({
@@ -80,8 +83,8 @@ describe("walletBridge", () => {
       }),
     ).rejects.toThrow("当前有一笔待完成的备份流程");
 
-    const draft = await walletBridge.loadPendingWalletDraft();
-    expect(draft?.accountId).toBe(pendingSession.draft.accountId);
+    const session = await walletBridge.loadPendingWalletSession();
+    expect(session?.draft.accountId).toBe(pendingSession.draft.accountId);
   });
 
   it("keeps the same derivation group and allocates the next free index", async () => {
@@ -196,7 +199,10 @@ describe("walletBridge", () => {
       password: "super-secret",
       isBiometricEnabled: true,
     });
-    await walletBridge.getPendingBackupPhrase("backup-token");
+    await walletBridge.getPendingBackupPhrase({
+      backupAccessToken: "backup-token",
+      password: "super-secret",
+    });
     await walletBridge.finalizePendingWallet({
       backupAccessToken: "backup-token",
       confirmedBackup: true,
@@ -216,6 +222,7 @@ describe("walletBridge", () => {
     expect(invokeMock).toHaveBeenNthCalledWith(2, "get_pending_backup_phrase", {
       request: {
         backupAccessToken: "backup-token",
+        password: "super-secret",
       },
     });
     expect(invokeMock).toHaveBeenNthCalledWith(3, "finalize_pending_wallet", {
@@ -242,11 +249,11 @@ describe("walletBridge", () => {
         isBiometricEnabled: false,
       });
 
-      const draft = await walletBridge.loadPendingWalletDraft();
-      expect(draft?.accountId).toBe(pending.draft.accountId);
+      const session = await walletBridge.loadPendingWalletSession();
+      expect(session?.draft.accountId).toBe(pending.draft.accountId);
 
       await walletBridge.cancelPendingWallet();
-      await expect(walletBridge.loadPendingWalletDraft()).resolves.toBeNull();
+      await expect(walletBridge.loadPendingWalletSession()).resolves.toBeNull();
     });
 
     it("returns the active profile after finalizing a preview wallet", async () => {
@@ -257,7 +264,10 @@ describe("walletBridge", () => {
         password: "super-secret",
         isBiometricEnabled: true,
       });
-      await walletBridge.getPendingBackupPhrase(pending.backupAccessToken);
+      await walletBridge.getPendingBackupPhrase({
+        backupAccessToken: pending.backupAccessToken,
+        password: "super-secret",
+      });
 
       const profile = await walletBridge.finalizePendingWallet({
         backupAccessToken: pending.backupAccessToken,
@@ -332,17 +342,7 @@ describe("walletBridge", () => {
         walletBridge.signTransferTransaction({
           accountId: profile.accountId,
           password: "super-secret",
-          chainId: "1",
-          nonce: "0",
-          amount: "0",
-          maxPriorityFeePerGasWei: "1",
-          maxFeePerGasWei: "1",
-          gasLimit: "21000",
-          recipientAddress: "0x1111111111111111111111111111111111111111",
-          feeMode: "eip1559",
-          asset: {
-            type: "native",
-          },
+          confirmationId: "confirmation-1",
         }),
       ).rejects.toThrow("浏览器预览模式不支持真实签名与广播，请使用 pnpm tauri dev");
     });
@@ -378,13 +378,16 @@ describe("walletBridge", () => {
       expect(invokeMock).toHaveBeenCalledWith("cancel_pending_wallet");
     });
 
-    it("delegates loadPendingWalletDraft and loadWalletProfile to invoke", async () => {
+    it("delegates loadPendingWalletSession and loadWalletProfile to invoke", async () => {
       const walletBridge = await loadWalletBridge();
-      invokeMock.mockResolvedValueOnce({ accountId: "id" });
+      invokeMock.mockResolvedValueOnce({
+        draft: { accountId: "id" },
+        backupAccessToken: "backup-token",
+      });
 
-      const draft = await walletBridge.loadPendingWalletDraft();
-      expect(draft?.accountId).toBe("id");
-      expect(invokeMock).toHaveBeenNthCalledWith(1, "load_pending_wallet_draft");
+      const session = await walletBridge.loadPendingWalletSession();
+      expect(session?.draft.accountId).toBe("id");
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "load_pending_wallet_session");
 
       const sessionSnapshot = {
         accounts: [{ accountId: "profile-1" }],
@@ -434,16 +437,26 @@ describe("walletBridge", () => {
       });
     });
 
-    it("sends signTransferTransaction payload to invoke", async () => {
+    it("sends exact prepare/sign transfer payloads to invoke", async () => {
       const walletBridge = await loadWalletBridge();
-      invokeMock.mockResolvedValue({
-        rawTransaction: "0x00",
-        txHash: "0x01",
-      });
+      invokeMock
+        .mockResolvedValueOnce({
+          confirmationId: "confirmation-1",
+        })
+        .mockResolvedValueOnce({
+          rawTransaction: "0x00",
+          txHash: "0x01",
+        })
+        .mockResolvedValueOnce({
+          confirmationId: "confirmation-2",
+        })
+        .mockResolvedValueOnce({
+          rawTransaction: "0x02",
+          txHash: "0x03",
+        });
 
-      const payload = await walletBridge.signTransferTransaction({
+      const preparedNative = await walletBridge.prepareTransferConfirmation({
         accountId: "account",
-        password: "pw",
         chainId: "1",
         nonce: "0",
         amount: "1",
@@ -457,12 +470,91 @@ describe("walletBridge", () => {
         },
       });
 
-      expect(invokeMock).toHaveBeenLastCalledWith("sign_transfer_transaction", {
-        request: expect.any(Object),
+      expect(invokeMock).toHaveBeenNthCalledWith(1, "prepare_transfer_confirmation", {
+        request: {
+          accountId: "account",
+          chainId: "1",
+          nonce: "0",
+          amount: "1",
+          maxPriorityFeePerGasWei: "1",
+          maxFeePerGasWei: "2",
+          gasLimit: "21000",
+          recipientAddress: "0x1111111111111111111111111111111111111111",
+          feeMode: "eip1559",
+          asset: {
+            type: "native",
+          },
+        },
+      });
+      expect(preparedNative).toEqual({
+        confirmationId: "confirmation-1",
+      });
+
+      const payload = await walletBridge.signTransferTransaction({
+        accountId: "account",
+        password: "pw",
+        confirmationId: "confirmation-1",
+      });
+
+      expect(invokeMock).toHaveBeenNthCalledWith(2, "sign_transfer_transaction", {
+        request: {
+          accountId: "account",
+          password: "pw",
+          confirmationId: "confirmation-1",
+        },
       });
       expect(payload).toEqual({
         rawTransaction: "0x00",
         txHash: "0x01",
+      });
+
+      const preparedErc20 = await walletBridge.prepareTransferConfirmation({
+        accountId: "account",
+        chainId: "8453",
+        nonce: "7",
+        amount: "1000000",
+        gasPriceWei: "42",
+        gasLimit: "65000",
+        recipientAddress: "0x2222222222222222222222222222222222222222",
+        feeMode: "legacy",
+        asset: {
+          type: "erc20",
+          contractAddress: "0x3333333333333333333333333333333333333333",
+        },
+      });
+
+      expect(invokeMock).toHaveBeenNthCalledWith(3, "prepare_transfer_confirmation", {
+        request: {
+          accountId: "account",
+          chainId: "8453",
+          nonce: "7",
+          amount: "1000000",
+          gasPriceWei: "42",
+          gasLimit: "65000",
+          recipientAddress: "0x2222222222222222222222222222222222222222",
+          feeMode: "legacy",
+          asset: {
+            type: "erc20",
+            contractAddress: "0x3333333333333333333333333333333333333333",
+          },
+        },
+      });
+      expect(preparedErc20).toEqual({
+        confirmationId: "confirmation-2",
+      });
+
+      await walletBridge.signTransferTransaction({
+        accountId: "account",
+        password: "pw",
+        confirmationId: "confirmation-2",
+      });
+
+      expect(invokeMock).toHaveBeenNthCalledWith(4, "sign_transfer_transaction", {
+        request: {
+          accountId: "account",
+          password: "pw",
+          confirmationId: "confirmation-2",
+        },
       });
     });
   });

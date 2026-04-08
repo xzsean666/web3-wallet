@@ -14,6 +14,8 @@ import type {
   GetPendingBackupPhraseRequest,
   PendingWalletDraft,
   PendingWalletSession,
+  PreparedTransferRequest,
+  PreparedTransferSession,
   SecretKind,
   SignedTransferPayload,
   SignTransferRequest,
@@ -68,6 +70,7 @@ interface PreviewPendingState {
 
 interface PreviewState {
   pending: PreviewPendingState | null;
+  preparedTransfers: Record<string, PreparedTransferRequest>;
   passwordVerifiers: Record<string, PasswordVerifier>;
   encryptedMnemonicSecrets: Record<string, EncryptedSecretPayload>;
   accounts: WalletProfile[];
@@ -76,6 +79,7 @@ interface PreviewState {
 
 const previewState: PreviewState = {
   pending: null,
+  preparedTransfers: {},
   passwordVerifiers: {},
   encryptedMnemonicSecrets: {},
   accounts: [],
@@ -131,25 +135,32 @@ export async function createWallet(request: CreateWalletRequest) {
   };
 }
 
-export async function loadPendingWalletDraft() {
+export async function loadPendingWalletSession() {
   if (isTauriWalletRuntime()) {
-    return invoke<PendingWalletDraft | null>("load_pending_wallet_draft");
+    return invoke<PendingWalletSession | null>("load_pending_wallet_session");
   }
 
-  return previewState.pending?.draft ?? null;
+  return previewState.pending
+    ? {
+        draft: previewState.pending.draft,
+        backupAccessToken: previewState.pending.backupAccessToken,
+      }
+    : null;
 }
 
-export async function getPendingBackupPhrase(backupAccessToken: string) {
+export async function getPendingBackupPhrase(request: GetPendingBackupPhraseRequest) {
   if (isTauriWalletRuntime()) {
-    const request: GetPendingBackupPhraseRequest = {
-      backupAccessToken,
-    };
-
     return invoke<string>("get_pending_backup_phrase", { request });
   }
 
-  if (!previewState.pending || previewState.pending.backupAccessToken !== backupAccessToken) {
+  if (!previewState.pending || previewState.pending.backupAccessToken !== request.backupAccessToken) {
     throw new Error("当前没有待确认的创建流程");
+  }
+
+  const verifiedPassword = await verifyPassword(request.password, previewState.pending.passwordVerifier);
+
+  if (!verifiedPassword) {
+    throw new Error("钱包密码不正确，无法继续查看助记词");
   }
 
   previewState.pending.hasRevealedBackupPhrase = true;
@@ -434,6 +445,19 @@ export async function deleteWalletAccount(request: DeleteWalletAccountRequest) {
   }
 
   return createPreviewSessionSnapshot();
+}
+
+export async function prepareTransferConfirmation(request: PreparedTransferRequest) {
+  if (isTauriWalletRuntime()) {
+    return invoke<PreparedTransferSession>("prepare_transfer_confirmation", { request });
+  }
+
+  const confirmationId = generateBackupAccessToken();
+  previewState.preparedTransfers[confirmationId] = { ...request };
+
+  return {
+    confirmationId,
+  };
 }
 
 export async function signTransferTransaction(request: SignTransferRequest) {

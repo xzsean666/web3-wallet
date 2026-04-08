@@ -63,7 +63,10 @@ async function openExternal(url: string | null) {
   if (isTauri()) {
     await openUrl(url);
   } else {
-    window.open(url, "_blank");
+    const openedWindow = window.open(url, "_blank", "noopener,noreferrer");
+    if (openedWindow) {
+      openedWindow.opener = null;
+    }
   }
 }
 

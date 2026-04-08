@@ -1,42 +1,13 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import { loadPendingWalletDraft } from "../services/walletBridge";
-import type { PendingWalletDraft, SecretKind, WalletAddress, WalletSource } from "../types/wallet";
-
-const BACKUP_TOKEN_STORAGE_KEY = "web3-wallet/onboarding/backup-token/v1";
-
-function canUseSessionStorage() {
-  return typeof window !== "undefined" && typeof window.sessionStorage !== "undefined";
-}
-
-function readPersistedBackupAccessToken() {
-  if (!canUseSessionStorage()) {
-    return null;
-  }
-
-  try {
-    const value = window.sessionStorage.getItem(BACKUP_TOKEN_STORAGE_KEY);
-    return value?.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
-function persistBackupAccessToken(value: string | null) {
-  if (!canUseSessionStorage()) {
-    return;
-  }
-
-  try {
-    if (value) {
-      window.sessionStorage.setItem(BACKUP_TOKEN_STORAGE_KEY, value);
-    } else {
-      window.sessionStorage.removeItem(BACKUP_TOKEN_STORAGE_KEY);
-    }
-  } catch {
-    // Ignore storage failures to avoid blocking wallet flows.
-  }
-}
+import { loadPendingWalletSession } from "../services/walletBridge";
+import type {
+  PendingWalletDraft,
+  PendingWalletSession,
+  SecretKind,
+  WalletAddress,
+  WalletSource,
+} from "../types/wallet";
 
 export const useOnboardingStore = defineStore("onboarding", () => {
   const internalDraft = ref<PendingWalletDraft | null>(null);
@@ -65,24 +36,21 @@ export const useOnboardingStore = defineStore("onboarding", () => {
   }) {
     backupAccessToken.value = options.backupAccessToken;
     internalDraft.value = options.draft;
-    persistBackupAccessToken(options.backupAccessToken);
   }
 
-  function setDraftFromBootstrap(draft: PendingWalletDraft | null) {
-    backupAccessToken.value = draft ? readPersistedBackupAccessToken() : null;
-    internalDraft.value = draft;
-    persistBackupAccessToken(backupAccessToken.value);
+  function setDraftFromBootstrap(session: PendingWalletSession | null) {
+    backupAccessToken.value = session?.backupAccessToken ?? null;
+    internalDraft.value = session?.draft ?? null;
   }
 
   function clearDraft() {
     backupAccessToken.value = null;
     internalDraft.value = null;
-    persistBackupAccessToken(null);
   }
 
   async function bootstrap() {
     try {
-      setDraftFromBootstrap(await loadPendingWalletDraft());
+      setDraftFromBootstrap(await loadPendingWalletSession());
     } catch {
       setDraftFromBootstrap(null);
     }

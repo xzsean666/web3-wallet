@@ -177,4 +177,62 @@ describe("networks store", () => {
       rehydratedWalletStore.recentActivity.some((item) => item.networkId === "custom-31337"),
     ).toBe(false);
   });
+
+  it("rotates the custom network scope id when editing to a different chain id", async () => {
+    bootstrapSession();
+    const networksStore = useNetworksStore();
+    const walletStore = useWalletStore();
+
+    expect(
+      networksStore.saveCustomNetwork({
+        name: "Local Rollup",
+        chainId: "31337",
+        rpcUrl: "https://rpc.local-rollup.dev",
+        symbol: "LRC",
+        explorerUrl: "https://scan.local-rollup.dev",
+      }).ok,
+    ).toBe(true);
+
+    walletStore.addCustomToken({
+      networkId: "custom-31337",
+      name: "Rollup Dollar",
+      symbol: "rUSD",
+      decimals: "18",
+      contractAddress: "0x1111111111111111111111111111111111111111",
+    });
+    walletStore.prependActivity({
+      id: "activity-rollup",
+      title: "Rollup transfer",
+      subtitle: "custom network",
+      status: "pending",
+      networkId: "custom-31337",
+    });
+    walletStore.upsertAddressBookEntry({
+      networkId: "custom-31337",
+      label: "Rollup Treasury",
+      address: "0x2222222222222222222222222222222222222222",
+      note: "custom",
+    });
+    await nextTick();
+
+    const updateResult = networksStore.saveCustomNetwork(
+      {
+        name: "Rollup Sepolia",
+        chainId: "11155111",
+        rpcUrl: "https://rpc.rollup-sepolia.dev",
+        symbol: "ETH",
+        explorerUrl: "https://scan.rollup-sepolia.dev",
+      },
+      "custom-31337",
+    );
+
+    expect(updateResult.ok).toBe(true);
+    expect(updateResult.ok && updateResult.network.id).toBe("custom-11155111");
+    expect(networksStore.activeNetworkId).toBe("custom-11155111");
+    expect(walletStore.tokensForNetwork("custom-31337")).toHaveLength(0);
+    expect(walletStore.contactsForNetwork("custom-31337")).toHaveLength(0);
+    expect(
+      walletStore.recentActivity.some((item) => item.networkId === "custom-31337"),
+    ).toBe(false);
+  });
 });

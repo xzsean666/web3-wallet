@@ -2,24 +2,21 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { useOnboardingStore } from "../onboarding";
 
-const { loadPendingWalletDraftMock } = vi.hoisted(() => ({
-  loadPendingWalletDraftMock: vi.fn(),
+const { loadPendingWalletSessionMock } = vi.hoisted(() => ({
+  loadPendingWalletSessionMock: vi.fn(),
 }));
 
 vi.mock("../../services/walletBridge", () => ({
-  loadPendingWalletDraft: loadPendingWalletDraftMock,
+  loadPendingWalletSession: loadPendingWalletSessionMock,
 }));
-
-const BACKUP_TOKEN_STORAGE_KEY = "web3-wallet/onboarding/backup-token/v1";
 
 describe("onboarding store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
-    loadPendingWalletDraftMock.mockReset();
-    window.sessionStorage.clear();
+    loadPendingWalletSessionMock.mockReset();
   });
 
-  it("persists and restores the backup access token for pending backup flows", async () => {
+  it("stores the backup access token in memory and restores it from the bridge session", async () => {
     const store = useOnboardingStore();
 
     store.stageDraft({
@@ -36,18 +33,21 @@ describe("onboarding store", () => {
       backupAccessToken: "backup-token",
     });
 
-    expect(window.sessionStorage.getItem(BACKUP_TOKEN_STORAGE_KEY)).toBe("backup-token");
+    expect(store.backupAccessToken).toBe("backup-token");
 
     setActivePinia(createPinia());
-    loadPendingWalletDraftMock.mockResolvedValueOnce({
-      accountId: "account-1",
-      derivationIndex: 0,
-      walletLabel: "Primary Wallet",
-      address: "0x1111111111111111111111111111111111111111",
-      isBiometricEnabled: true,
-      source: "created",
-      secretKind: "mnemonic",
-      createdAt: "2026-04-07T00:00:00.000Z",
+    loadPendingWalletSessionMock.mockResolvedValueOnce({
+      draft: {
+        accountId: "account-1",
+        derivationIndex: 0,
+        walletLabel: "Primary Wallet",
+        address: "0x1111111111111111111111111111111111111111",
+        isBiometricEnabled: true,
+        source: "created",
+        secretKind: "mnemonic",
+        createdAt: "2026-04-07T00:00:00.000Z",
+      },
+      backupAccessToken: "backup-token",
     });
 
     const rehydratedStore = useOnboardingStore();
@@ -57,7 +57,7 @@ describe("onboarding store", () => {
     expect(rehydratedStore.hasPendingBackup).toBe(true);
   });
 
-  it("clears the persisted backup token when the draft is cleared", () => {
+  it("clears the in-memory backup token when the draft is cleared", () => {
     const store = useOnboardingStore();
 
     store.stageDraft({
@@ -76,7 +76,6 @@ describe("onboarding store", () => {
 
     store.clearDraft();
 
-    expect(window.sessionStorage.getItem(BACKUP_TOKEN_STORAGE_KEY)).toBeNull();
     expect(store.backupAccessToken).toBeNull();
   });
 });

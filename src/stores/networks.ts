@@ -93,6 +93,19 @@ function normalizeNetworkDraft(draft: NetworkDraft): NetworkDraft {
   };
 }
 
+function isLoopbackHost(hostname: string) {
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "[::1]" ||
+    hostname === "::1"
+  );
+}
+
+function isAllowedNetworkUrl(url: URL) {
+  return url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname));
+}
+
 function isPersistedCustomNetwork(value: unknown): value is NetworkConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -161,11 +174,11 @@ export const useNetworksStore = defineStore("networks", () => {
 
     try {
       const rpc = new URL(normalizedDraft.rpcUrl);
-      if (!["http:", "https:"].includes(rpc.protocol)) {
-        errors.push("RPC URL 必须是合法的 HTTP 或 HTTPS 地址");
+      if (!isAllowedNetworkUrl(rpc)) {
+        errors.push("RPC URL 必须是 HTTPS 地址，或本机回环地址上的 HTTP/HTTPS");
       }
     } catch {
-      errors.push("RPC URL 必须是合法的 HTTP 或 HTTPS 地址");
+      errors.push("RPC URL 必须是 HTTPS 地址，或本机回环地址上的 HTTP/HTTPS");
     }
 
     if (!normalizedDraft.symbol || normalizedDraft.symbol.length > 8) {
@@ -175,11 +188,11 @@ export const useNetworksStore = defineStore("networks", () => {
     if (normalizedDraft.explorerUrl) {
       try {
         const explorer = new URL(normalizedDraft.explorerUrl);
-        if (!["http:", "https:"].includes(explorer.protocol)) {
-          errors.push("区块浏览器 URL 必须是合法的 HTTP 或 HTTPS 地址");
+        if (!isAllowedNetworkUrl(explorer)) {
+          errors.push("区块浏览器 URL 必须是 HTTPS 地址，或本机回环地址上的 HTTP/HTTPS");
         }
       } catch {
-        errors.push("区块浏览器 URL 必须是合法的 HTTP 或 HTTPS 地址");
+        errors.push("区块浏览器 URL 必须是 HTTPS 地址，或本机回环地址上的 HTTP/HTTPS");
       }
     }
 
@@ -207,8 +220,16 @@ export const useNetworksStore = defineStore("networks", () => {
       };
     }
 
+    const existingNetwork = editingId
+      ? customNetworks.value.find((network) => network.id === editingId) ?? null
+      : null;
+    const shouldRotateScopeId =
+      existingNetwork !== null && existingNetwork.chainId !== Number(normalizedDraft.chainId);
+    const nextNetworkId = shouldRotateScopeId
+      ? `custom-${Number(normalizedDraft.chainId)}`
+      : editingId ?? `custom-${Number(normalizedDraft.chainId)}`;
     const nextNetwork: NetworkConfig = {
-      id: editingId ?? `custom-${Number(normalizedDraft.chainId)}`,
+      id: nextNetworkId,
       source: "custom",
       name: normalizedDraft.name,
       chainId: Number(normalizedDraft.chainId),
@@ -221,6 +242,10 @@ export const useNetworksStore = defineStore("networks", () => {
       customNetworks.value = customNetworks.value.map((network) =>
         network.id === editingId ? nextNetwork : network,
       );
+      if (shouldRotateScopeId) {
+        clearNetworkScopedUiState(editingId);
+        walletStore.removeNetworkScopedData(editingId);
+      }
     } else {
       customNetworks.value = [...customNetworks.value, nextNetwork];
     }

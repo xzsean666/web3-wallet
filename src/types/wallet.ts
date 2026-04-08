@@ -41,6 +41,7 @@ export interface WalletSessionSnapshot {
 
 export interface GetPendingBackupPhraseRequest {
   backupAccessToken: string;
+  password: string;
 }
 
 export interface FinalizePendingWalletRequest {
@@ -116,9 +117,8 @@ export type TransferAsset =
       contractAddress: WalletAddress;
     };
 
-export interface SignTransferRequest {
+export interface PreparedTransferRequest {
   accountId: string;
-  password: string;
   chainId: string;
   nonce: string;
   gasLimit: string;
@@ -129,6 +129,16 @@ export interface SignTransferRequest {
   maxFeePerGasWei?: string | null;
   maxPriorityFeePerGasWei?: string | null;
   asset: TransferAsset;
+}
+
+export interface PreparedTransferSession {
+  confirmationId: string;
+}
+
+export interface SignTransferRequest {
+  accountId: string;
+  password: string;
+  confirmationId: string;
 }
 
 export interface SignedTransferPayload {

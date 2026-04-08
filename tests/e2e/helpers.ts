@@ -168,6 +168,8 @@ export async function createFreshWallet(
   await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
   await page.getByRole("button", { name: "继续并生成助记词" }).click();
   await expect(page.getByText("这一步不要偷懒，助记词只展示一次。")).toBeVisible();
+  await page.getByPlaceholder("输入创建这个钱包时设置的密码").fill(WALLET_PASSWORD);
+  await page.getByRole("button", { name: "显示助记词" }).click();
   await expect(page.locator(".word-chip")).toHaveCount(12);
   await page.getByLabel("我已经离线备份这组助记词").check();
   await page.getByRole("button", { name: "完成备份并进入钱包" }).click();

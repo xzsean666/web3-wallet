@@ -15,6 +15,7 @@ const onboardingStore = useOnboardingStore();
 const sessionStore = useSessionStore();
 const confirmed = ref(false);
 const formError = ref("");
+const backupPassword = ref("");
 const words = ref<string[]>([]);
 const backTarget = computed(() => (sessionStore.hasWallet ? "/settings/accounts" : "/welcome"));
 const missingBackupTarget = computed(() => (sessionStore.hasWallet ? "/wallet" : "/welcome"));
@@ -49,21 +50,44 @@ onMounted(async () => {
 
   if (!onboardingStore.backupAccessToken) {
     formError.value = "当前备份会话无法恢复，请取消本次流程后重新创建钱包。";
+  }
+});
+
+async function revealBackupPhrase() {
+  formError.value = "";
+
+  if (!onboardingStore.backupAccessToken) {
+    formError.value = "当前备份会话已失效，请取消本次流程后重新创建钱包。";
+    return;
+  }
+
+  if (!backupPassword.value.trim()) {
+    formError.value = "请输入创建该钱包时设置的钱包密码，再显示助记词。";
     return;
   }
 
   try {
-    const phrase = await getPendingBackupPhrase(onboardingStore.backupAccessToken);
+    const phrase = await getPendingBackupPhrase({
+      backupAccessToken: onboardingStore.backupAccessToken,
+      password: backupPassword.value,
+    });
     words.value = phrase.trim().split(/\s+/);
+    formError.value = "";
   } catch (error) {
+    words.value = [];
     formError.value =
       error instanceof Error
         ? error.message
         : "当前无法恢复备份会话，请取消本次流程后重新创建钱包。";
   }
-});
+}
 
 async function finalizeBackup() {
+  if (words.value.length === 0) {
+    formError.value = "请先输入钱包密码并显示助记词，再完成备份确认。";
+    return;
+  }
+
   if (!confirmed.value) {
     formError.value = "你必须确认已经离线备份助记词";
     return;
@@ -125,6 +149,22 @@ async function cancelFlow() {
       </SectionCard>
 
       <SectionCard title="Confirm" description="完成确认后才允许进入钱包">
+        <label class="field">
+          <span>钱包密码</span>
+          <input
+            v-model="backupPassword"
+            autocomplete="current-password"
+            type="password"
+            placeholder="输入创建这个钱包时设置的密码"
+          />
+        </label>
+
+        <div class="form-actions">
+          <button class="button button--secondary" type="button" @click="revealBackupPhrase">
+            显示助记词
+          </button>
+        </div>
+
         <label class="toggle-row">
           <input v-model="confirmed" type="checkbox" />
           <span>我已经离线备份这组助记词</span>
