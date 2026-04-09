@@ -9,3 +9,10 @@
   如果你只是先验证构建链路，建议先打调试包：
 
   pnpm tauri android build --apk --debug --target aarch64
+
+  打完以后这样找 APK：
+
+  find src-tauri/gen/android/app/build/outputs -name '*.apk' | sort
+
+  补充一点：当前生成的 Android 工程里没有显式的 signingConfig / keystore 配置，所以如果你是要“正式发布的 release 签名包”，后面
+  还要再配签名；如果你只是想先在手机上装包测试，先用 --debug 最稳。
