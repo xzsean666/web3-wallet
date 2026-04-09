@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
 import { nextTick } from "vue";
-import { clearPersistedUiState } from "../../services/uiState";
+import { clearPersistedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import { useSessionStore } from "../session";
 import { useWalletStore } from "../wallet";
 
@@ -69,6 +69,25 @@ describe("wallet store", () => {
 
     expect(result.ok).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it("ships immutable preset stablecoins on the default mainnets", () => {
+    bootstrapSession();
+    const store = useWalletStore();
+
+    expect(store.tokensForNetwork("ethereum").map((token) => token.id)).toEqual(
+      expect.arrayContaining(["usdc-ethereum", "usdt-ethereum"]),
+    );
+    expect(store.tokensForNetwork("base").map((token) => token.id)).toEqual(
+      expect.arrayContaining(["usdc-base", "usdt-base"]),
+    );
+    expect(store.tokensForNetwork("optimism").map((token) => token.id)).toEqual(
+      expect.arrayContaining(["usdc-optimism", "usdt-optimism"]),
+    );
+
+    const presetRemoval = store.removeCustomToken("usdt-base");
+    expect(presetRemoval.ok).toBe(false);
+    expect(presetRemoval.error).toBe("预置 Token 不能被移除");
   });
 
   it("removes only custom tokens", () => {
@@ -165,6 +184,41 @@ describe("wallet store", () => {
       title: "CD 转账已提交",
       status: "pending",
       assetSymbol: "CD",
+    });
+  });
+
+  it("deduplicates persisted custom tokens that now match preset mainnet assets", async () => {
+    bootstrapSession();
+    patchWalletScopedUiState("account-1", {
+      customTokens: [
+        {
+          id: "custom-base-usdt",
+          symbol: "USDT",
+          name: "Legacy Base USDT",
+          balance: "0.00",
+          decimals: 6,
+          contractAddress: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+          networkIds: ["base"],
+          source: "custom",
+        },
+      ],
+    });
+    await nextTick();
+
+    setActivePinia(createPinia());
+    bootstrapSession();
+    const rehydratedStore = useWalletStore();
+    const baseUsdtEntries = rehydratedStore
+      .tokensForNetwork("base")
+      .filter(
+        (token) =>
+          token.contractAddress.toLowerCase() === "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2".toLowerCase(),
+      );
+
+    expect(baseUsdtEntries).toHaveLength(1);
+    expect(baseUsdtEntries[0]).toMatchObject({
+      id: "usdt-base",
+      source: "preset",
     });
   });
 

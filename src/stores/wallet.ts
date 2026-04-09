@@ -25,39 +25,9 @@ const defaultTrackedTokens: TrackedToken[] = [
     source: "preset",
   },
   {
-    id: "usdc-base",
-    symbol: "USDC",
-    name: "USD Coin",
-    balance: "0.00",
-    decimals: 6,
-    contractAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
-    networkIds: ["base"],
-    source: "preset",
-  },
-  {
-    id: "usdc-optimism",
-    symbol: "USDC",
-    name: "USD Coin",
-    balance: "0.00",
-    decimals: 6,
-    contractAddress: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
-    networkIds: ["optimism"],
-    source: "preset",
-  },
-  {
-    id: "usdc-arbitrum",
-    symbol: "USDC",
-    name: "USD Coin",
-    balance: "0.00",
-    decimals: 6,
-    contractAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
-    networkIds: ["arbitrum"],
-    source: "preset",
-  },
-  {
     id: "usdt-ethereum",
     symbol: "USDT",
-    name: "Tether",
+    name: "Tether USD",
     balance: "0.00",
     decimals: 6,
     contractAddress: "0xdAC17F958D2ee523a2206206994597C13D831ec7",
@@ -74,7 +44,65 @@ const defaultTrackedTokens: TrackedToken[] = [
     networkIds: ["ethereum"],
     source: "preset",
   },
+  {
+    id: "usdc-base",
+    symbol: "USDC",
+    name: "USD Coin",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    networkIds: ["base"],
+    source: "preset",
+  },
+  {
+    id: "usdt-base",
+    symbol: "USDT",
+    name: "Tether USD",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0xfde4C96c8593536E31F229EA8f37b2ADa2699bb2",
+    networkIds: ["base"],
+    source: "preset",
+  },
+  {
+    id: "usdc-optimism",
+    symbol: "USDC",
+    name: "USD Coin",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+    networkIds: ["optimism"],
+    source: "preset",
+  },
+  {
+    id: "usdt-optimism",
+    symbol: "USDT",
+    name: "Tether USD",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0x94b008aA00579c1307B0EF2c499aD98a8ce58e58",
+    networkIds: ["optimism"],
+    source: "preset",
+  },
+  {
+    id: "usdc-arbitrum",
+    symbol: "USDC",
+    name: "USD Coin",
+    balance: "0.00",
+    decimals: 6,
+    contractAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+    networkIds: ["arbitrum"],
+    source: "preset",
+  },
 ];
+
+function matchesPresetTrackedToken(token: Pick<TrackedToken, "contractAddress" | "networkIds">) {
+  return defaultTrackedTokens.some(
+    (presetToken) =>
+      presetToken.contractAddress.toLowerCase() === token.contractAddress.toLowerCase() &&
+      presetToken.networkIds.some((networkId) => token.networkIds.includes(networkId)),
+  );
+}
 
 const defaultActivity: ActivityItem[] = [
   {
@@ -117,7 +145,8 @@ function hydrateCustomTrackedTokens(value: unknown) {
     .map((token) => ({
       ...token,
       source: "custom" as const,
-    }));
+    }))
+    .filter((token) => !matchesPresetTrackedToken(token));
 }
 
 function isPersistedActivityItem(value: unknown): value is ActivityItem {
