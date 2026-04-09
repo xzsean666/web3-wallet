@@ -1,0 +1,11 @@
+  如果你是给真机打包，最实用的是先只打 arm64：
+
+  pnpm tauri android build --apk --target aarch64
+
+  如果你想打所有 ABI：
+
+  pnpm tauri android build --apk
+
+  如果你只是先验证构建链路，建议先打调试包：
+
+  pnpm tauri android build --apk --debug --target aarch64
