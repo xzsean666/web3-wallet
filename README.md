@@ -27,9 +27,38 @@ buildprogtess.md
 pnpm install
 pnpm dev
 pnpm tauri dev
+pnpm android:env
 pnpm test:unit
 pnpm test:e2e
 ```
+
+## Android APK 环境检查
+
+```bash
+pnpm android:env
+```
+
+该脚本会检查 Node.js / pnpm / Tauri CLI、Rust Android targets、Java、Android SDK / NDK、`src-tauri/gen/android` 初始化状态，并输出缺失项的安装建议。
+
+## Android APK 自动安装环境
+
+```bash
+pnpm android:install-env
+```
+
+可选：
+
+```bash
+pnpm android:install-env:init
+```
+
+或直接执行脚本：
+
+```bash
+bash scripts/install-android-build-env.sh --init-project
+```
+
+该脚本目前面向 Ubuntu / Debian，自动安装 OpenJDK 17、Rust Android targets、Android SDK command-line tools、Platform / Build-Tools / NDK，并把 `JAVA_HOME`、`ANDROID_HOME`、`ANDROID_SDK_ROOT`、`NDK_HOME` 写入当前 shell 的 rc 文件。
 
 ## 注意
 
