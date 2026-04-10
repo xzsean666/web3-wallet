@@ -464,6 +464,11 @@ install_project_init() {
     run_in_project "pnpm tauri android init --ci"
     log_ok "Android project initialized"
   fi
+
+  if [[ -x "$PROJECT_ROOT/scripts/sync-android-system-bars.sh" || -f "$PROJECT_ROOT/scripts/sync-android-system-bars.sh" ]]; then
+    bash "$PROJECT_ROOT/scripts/sync-android-system-bars.sh"
+    log_ok "Android system bar defaults synced"
+  fi
 }
 
 run_final_check() {
