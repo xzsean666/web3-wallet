@@ -8,6 +8,10 @@ import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
 import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
+import {
+  buildAddressExplorerUrl,
+  toSafeExternalUrl,
+} from "../../utils/runtimeSafety";
 
 const sessionStore = useSessionStore();
 const networksStore = useNetworksStore();
@@ -16,14 +20,11 @@ const { primaryAddress } = storeToRefs(sessionStore);
 const { activeNetwork } = storeToRefs(networksStore);
 
 const copyState = ref<"idle" | "success" | "error">("idle");
+const externalLinkError = ref("");
 let copyStateTimer: number | null = null;
 
 const addressExplorerUrl = computed(() => {
-  if (!primaryAddress.value || !activeNetwork.value.explorerUrl) {
-    return null;
-  }
-
-  return `${activeNetwork.value.explorerUrl.replace(/\/$/, "")}/address/${primaryAddress.value}`;
+  return buildAddressExplorerUrl(activeNetwork.value.explorerUrl, primaryAddress.value);
 });
 
 function resetCopyState() {
@@ -60,10 +61,18 @@ async function copyAddress() {
 
 async function openExternal(url: string | null) {
   if (!url) return;
+  const safeUrl = toSafeExternalUrl(url);
+
+  if (!safeUrl) {
+    externalLinkError.value = "已拦截不安全的外链地址";
+    return;
+  }
+
+  externalLinkError.value = "";
   if (isTauri()) {
-    await openUrl(url);
+    await openUrl(safeUrl);
   } else {
-    const openedWindow = window.open(url, "_blank", "noopener,noreferrer");
+    const openedWindow = window.open(safeUrl, "_blank", "noopener,noreferrer");
     if (openedWindow) {
       openedWindow.opener = null;
     }
@@ -111,6 +120,9 @@ onBeforeUnmount(resetCopyState);
               区块浏览器
             </button>
           </div>
+          <p v-if="externalLinkError" class="helper-text helper-text--error">
+            {{ externalLinkError }}
+          </p>
 
           <p class="receive-sheet__note">建议先小额测试。</p>
 

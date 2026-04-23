@@ -28,6 +28,7 @@ pnpm install
 pnpm dev
 pnpm tauri dev
 pnpm android:env
+pnpm test
 pnpm test:unit
 pnpm test:e2e
 ```
@@ -59,6 +60,25 @@ bash scripts/install-android-build-env.sh --init-project
 ```
 
 该脚本目前面向 Ubuntu / Debian，自动安装 OpenJDK 17、Rust Android targets、Android SDK command-line tools、Platform / Build-Tools / NDK，并把 `JAVA_HOME`、`ANDROID_HOME`、`ANDROID_SDK_ROOT`、`NDK_HOME` 写入当前 shell 的 rc 文件。
+项目初始化阶段现在会使用 `pnpm install --frozen-lockfile`，避免在构建机上漂移依赖树。
+
+建议在 CI 或发布机固定下载校验值：
+
+```bash
+ANDROID_CMDLINE_TOOLS_SHA256=<expected_sha256> \
+ANDROID_CMDLINE_TOOLS_REQUIRE_CHECKSUM=1 \
+bash scripts/install-android-build-env.sh
+```
+
+如果你希望 rustup 安装脚本也强制校验：
+
+```bash
+RUSTUP_INIT_SHA256=<expected_sha256> \
+RUSTUP_REQUIRE_CHECKSUM=1 \
+bash scripts/install-android-build-env.sh
+```
+
+如果你覆盖下载 URL，脚本现在会要求同时提供对应 SHA256；默认只接受 `https://` 且受信任主机，除非显式设置 `ALLOW_UNTRUSTED_DOWNLOAD_HOSTS=1`。
 
 ## Android Release 签名
 
@@ -76,12 +96,30 @@ pnpm android:release
 
 这个脚本会自动完成：
 
-- 首次无 keystore 时创建 `.local/android-upload.keystore`
 - 构建 Android release APK
 - 对 `unsigned.apk` 做对齐和签名
 - 把最终可安装 APK 放到根目录 `release/`
 
-执行时会让你输入 keystore 密码；首次创建 keystore 和后续签名都复用这一组密码。
+执行时会让你输入 keystore 密码。`build_apk` 现在默认不会在缺少 keystore 时静默创建新的发布签名身份；请先显式生成 keystore：
+
+```bash
+pnpm android:keystore
+```
+
+如果你明确要在当前机器上新建一个 keystore，再执行：
+
+```bash
+./build_apk --create-keystore
+```
+
+或：
+
+```bash
+ALLOW_NEW_KEYSTORE=1 ./build_apk
+```
+
+后续签名都复用这一组密码。
+签名和 keystore 生成流程已避免把口令值直接放入命令行参数。
 
 默认会生成两个文件：
 
@@ -124,6 +162,16 @@ ANDROID_KEY_ALIAS=upload \
 pnpm android:sign
 ```
 
+如果你在 CI 中不希望交互输入，可把口令放到权限受限文件（例如 `chmod 600`）并通过环境变量传入：
+
+```bash
+ANDROID_KEYSTORE_PATH=.local/android-upload.keystore \
+ANDROID_KEY_ALIAS=upload \
+ANDROID_KEYSTORE_PASSWORD_FILE=/secure/path/ks.pass \
+ANDROID_KEY_PASSWORD_FILE=/secure/path/key.pass \
+pnpm android:sign
+```
+
 脚本会默认读取：
 
 - `src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk`
@@ -148,3 +196,4 @@ bash scripts/sign-android-apk.sh \
 - iOS 初始化和构建只能在 macOS 上完成。
 - `Playwright` 当前覆盖的是浏览器预览模式下的页面流和路由/表单行为，不直接驱动 Tauri 窗口。
 - 真实本地签名与广播仍需在 `pnpm tauri dev` 运行时里验证；仓库内已补对应的服务层和 Rust 单测。
+- 自定义 RPC 的“校验通过”只代表节点可连通且 `chainId` / 最新区块响应匹配，不代表该 RPC 本身可信；发送前仍需核对网络费、地址和链环境。

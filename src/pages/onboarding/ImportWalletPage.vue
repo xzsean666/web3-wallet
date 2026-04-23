@@ -2,10 +2,14 @@
 import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
-import { importWallet } from "../../services/walletBridge";
+import { importWallet, isTauriWalletRuntime } from "../../services/walletBridge";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { useSessionStore } from "../../stores/session";
 import type { SecretKind } from "../../types/wallet";
+import {
+  isPreviewSecretFlowAllowed,
+  PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE,
+} from "../../utils/runtimeSafety";
 
 const route = useRoute();
 const router = useRouter();
@@ -24,9 +28,17 @@ const enableBiometric = ref(true);
 const formError = ref("");
 const isSubmitting = ref(false);
 const backTarget = computed(() => (isAddAccountMode.value ? "/settings/accounts" : "/welcome"));
+const previewSecretFlowBlocked = computed(
+  () => !isTauriWalletRuntime() && !isPreviewSecretFlowAllowed(),
+);
 
 async function submitImport() {
   formError.value = "";
+
+  if (previewSecretFlowBlocked.value) {
+    formError.value = PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE;
+    return;
+  }
 
   if (onboardingStore.hasPendingDraft) {
     formError.value = "当前有一笔待完成的备份流程，请先完成或取消后再继续。";
@@ -130,6 +142,7 @@ async function submitImport() {
             <input
               v-model="walletLabel"
               autocomplete="off"
+              :disabled="previewSecretFlowBlocked"
               :placeholder="isAddAccountMode ? `Imported Account ${sessionStore.accountCount + 1}` : 'Imported Wallet'"
             />
           </label>
@@ -138,6 +151,7 @@ async function submitImport() {
             <span>{{ importMode === "mnemonic" ? "助记词" : "私钥" }}</span>
             <textarea
               v-model="secretValue"
+              :disabled="previewSecretFlowBlocked"
               :placeholder="
                 importMode === 'mnemonic'
                   ? '输入 12 个英文助记词'
@@ -152,6 +166,7 @@ async function submitImport() {
             <input
               v-model="password"
               autocomplete="new-password"
+              :disabled="previewSecretFlowBlocked"
               type="password"
               placeholder="至少 8 位"
             />
@@ -162,20 +177,28 @@ async function submitImport() {
             <input
               v-model="confirmPassword"
               autocomplete="new-password"
+              :disabled="previewSecretFlowBlocked"
               type="password"
               placeholder="再次输入密码"
             />
           </label>
 
           <label class="toggle-row">
-            <input v-model="enableBiometric" type="checkbox" />
+            <input v-model="enableBiometric" :disabled="previewSecretFlowBlocked" type="checkbox" />
             <span>导入后默认显示生物识别入口</span>
           </label>
 
           <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
+          <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
+            {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
+          </p>
 
           <div class="form-actions">
-            <button :disabled="isSubmitting" class="button button--primary" type="submit">
+            <button
+              :disabled="isSubmitting || previewSecretFlowBlocked"
+              class="button button--primary"
+              type="submit"
+            >
               {{ isSubmitting ? "正在导入..." : isAddAccountMode ? "导入并切换账号" : "导入钱包" }}
             </button>
             <RouterLink class="button button--ghost" :to="backTarget">返回</RouterLink>

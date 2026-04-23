@@ -24,6 +24,7 @@ import type { NetworkConfig } from "../../types/network";
 import type { TransferErrorFeedback, TransferPreview } from "../../types/portfolio";
 import type { WalletAddress, WalletHex } from "../../types/wallet";
 import { formatTokenAmount, shortenAddress } from "../../utils/format";
+import { getRestrictedAddressReason } from "../../utils/runtimeSafety";
 
 const route = useRoute();
 const router = useRouter();
@@ -240,7 +241,11 @@ watch(
   () => route.query.recipient,
   (nextRecipient) => {
     if (typeof nextRecipient === "string" && isAddress(nextRecipient)) {
-      recipientAddress.value = nextRecipient;
+      const restrictedAddressReason = getRestrictedAddressReason(nextRecipient);
+
+      if (!restrictedAddressReason) {
+        recipientAddress.value = nextRecipient;
+      }
     }
   },
   { immediate: true },
@@ -434,6 +439,12 @@ async function pasteRecipientAddress() {
       throw new Error("剪贴板内容不是合法的 EVM 地址");
     }
 
+    const restrictedAddressReason = getRestrictedAddressReason(clipboardText);
+
+    if (restrictedAddressReason) {
+      throw new Error(restrictedAddressReason);
+    }
+
     recipientAddress.value = clipboardText;
     pasteFeedback.value = {
       tone: "success",
@@ -549,6 +560,16 @@ async function fillMaxAmount() {
     return;
   }
 
+  const restrictedAddressReason = getRestrictedAddressReason(normalizedRecipient);
+
+  if (restrictedAddressReason) {
+    setAmountFeedback({
+      tone: "error",
+      message: restrictedAddressReason,
+    });
+    return;
+  }
+
   isFillingMax.value = true;
   const requestId = ++fillMaxRequestId;
   const requestNetwork = activeNetwork.value;
@@ -635,6 +656,12 @@ async function buildConfirmation() {
 
   if (!isAddress(recipientAddress.value.trim())) {
     formErrors.value.push("收款地址必须是合法的 EVM 地址");
+  }
+
+  const restrictedAddressReason = getRestrictedAddressReason(recipientAddress.value.trim());
+
+  if (restrictedAddressReason) {
+    formErrors.value.push(restrictedAddressReason);
   }
 
   const parsedAmountResult = selectedAsset.value
@@ -869,7 +896,29 @@ async function signAndBroadcast() {
       return;
     }
 
-    const txHash = (broadcastHash || signedPayload.txHash) as WalletHex;
+    if (!broadcastHash) {
+      transferFeedback.value = {
+        stage: "broadcast",
+        category: "rpc",
+        title: "广播结果缺少交易哈希",
+        message: "当前 RPC 没有返回交易哈希，已拒绝继续记录这笔交易。",
+        hints: ["切换到可信 RPC 后重试", "不要依据这次返回结果继续操作资产"],
+      };
+      return;
+    }
+
+    if (broadcastHash.toLowerCase() !== signedPayload.txHash.toLowerCase()) {
+      transferFeedback.value = {
+        stage: "broadcast",
+        category: "rpc",
+        title: "广播结果与本地签名哈希不一致",
+        message: "当前 RPC 返回的交易哈希和本地签名结果不一致，已拒绝继续记录这笔交易。",
+        hints: ["切换到可信 RPC 后重试", "不要依据这次返回结果继续操作资产"],
+      };
+      return;
+    }
+
+    const txHash = signedPayload.txHash as WalletHex;
 
     walletStore.prependActivity({
       id: txHash,
@@ -1069,6 +1118,14 @@ async function signAndBroadcast() {
             <strong>{{ confirmation.networkName }}</strong>
           </div>
           <div class="key-value-row">
+            <span>Chain ID</span>
+            <strong>{{ confirmation.chainId }}</strong>
+          </div>
+          <div class="key-value-row">
+            <span>Nonce</span>
+            <strong>{{ confirmation.gas.nonce }}</strong>
+          </div>
+          <div class="key-value-row">
             <span>地址</span>
             <strong>{{ confirmation.recipientAddress }}</strong>
           </div>
@@ -1080,6 +1137,24 @@ async function signAndBroadcast() {
             <span>Gas</span>
             <strong>{{ confirmation.gas.gasLimit }}</strong>
           </div>
+          <div class="key-value-row">
+            <span>Fee Mode</span>
+            <strong>{{ confirmation.gas.feeMode }}</strong>
+          </div>
+          <div v-if="confirmation.gas.feeMode === 'legacy'" class="key-value-row">
+            <span>Gas Price</span>
+            <strong>{{ confirmation.gas.gasPriceGwei ?? confirmation.gas.gasPriceWei ?? "N/A" }}</strong>
+          </div>
+          <template v-else>
+            <div class="key-value-row">
+              <span>Max Fee</span>
+              <strong>{{ confirmation.gas.maxFeePerGasGwei ?? confirmation.gas.maxFeePerGasWei ?? "N/A" }}</strong>
+            </div>
+            <div class="key-value-row">
+              <span>Priority Fee</span>
+              <strong>{{ confirmation.gas.maxPriorityFeePerGasGwei ?? confirmation.gas.maxPriorityFeePerGasWei ?? "N/A" }}</strong>
+            </div>
+          </template>
           <div
             v-if="confirmation.assetType === 'erc20' && confirmation.contractAddress"
             class="key-value-row"

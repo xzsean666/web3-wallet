@@ -16,6 +16,8 @@ VALIDITY_DAYS="${ANDROID_KEY_VALIDITY_DAYS:-$DEFAULT_VALIDITY_DAYS}"
 DNAME="${ANDROID_KEY_DNAME:-$DEFAULT_DNAME}"
 STORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-}"
 KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-}"
+STORE_PASSWORD_FILE="${ANDROID_KEYSTORE_PASSWORD_FILE:-}"
+KEY_PASSWORD_FILE="${ANDROID_KEY_PASSWORD_FILE:-}"
 
 usage() {
   cat <<'EOF'
@@ -36,7 +38,19 @@ Environment variables:
   ANDROID_KEY_DNAME
   ANDROID_KEYSTORE_PASSWORD
   ANDROID_KEY_PASSWORD
+  ANDROID_KEYSTORE_PASSWORD_FILE
+  ANDROID_KEY_PASSWORD_FILE
 EOF
+}
+
+read_secret_from_file() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || {
+    printf 'Secret file not found: %s\n' "$file_path" >&2
+    exit 1
+  }
+  IFS= read -r secret < "$file_path" || true
+  printf '%s' "$secret"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -80,8 +94,20 @@ if [[ -e "$KEYSTORE_PATH" ]]; then
 fi
 
 if [[ -z "$STORE_PASSWORD" ]]; then
+  if [[ -n "$STORE_PASSWORD_FILE" ]]; then
+    STORE_PASSWORD="$(read_secret_from_file "$STORE_PASSWORD_FILE")"
+  fi
+fi
+
+if [[ -z "$STORE_PASSWORD" ]]; then
   read -r -s -p "Keystore password: " STORE_PASSWORD
   printf '\n'
+fi
+
+if [[ -z "$KEY_PASSWORD" ]]; then
+  if [[ -n "$KEY_PASSWORD_FILE" ]]; then
+    KEY_PASSWORD="$(read_secret_from_file "$KEY_PASSWORD_FILE")"
+  fi
 fi
 
 if [[ -z "$KEY_PASSWORD" ]]; then
@@ -94,6 +120,17 @@ fi
 
 mkdir -p "$(dirname "$KEYSTORE_PATH")"
 
+KEYTOOL_STORE_PASS_ENV="WEB3_WALLET_KEYSTORE_PASS_$$"
+KEYTOOL_KEY_PASS_ENV="WEB3_WALLET_KEY_PASS_$$"
+
+cleanup_secret_env() {
+  unset "$KEYTOOL_STORE_PASS_ENV" "$KEYTOOL_KEY_PASS_ENV"
+}
+
+export "$KEYTOOL_STORE_PASS_ENV=$STORE_PASSWORD"
+export "$KEYTOOL_KEY_PASS_ENV=$KEY_PASSWORD"
+trap cleanup_secret_env EXIT
+
 keytool -genkeypair \
   -v \
   -storetype PKCS12 \
@@ -102,9 +139,11 @@ keytool -genkeypair \
   -keyalg RSA \
   -keysize 2048 \
   -validity "$VALIDITY_DAYS" \
-  -storepass "$STORE_PASSWORD" \
-  -keypass "$KEY_PASSWORD" \
+  -storepass:env "$KEYTOOL_STORE_PASS_ENV" \
+  -keypass:env "$KEYTOOL_KEY_PASS_ENV" \
   -dname "$DNAME"
+
+unset STORE_PASSWORD KEY_PASSWORD STORE_PASSWORD_FILE KEY_PASSWORD_FILE
 
 printf 'Created keystore: %s\n' "$KEYSTORE_PATH"
 printf 'Alias: %s\n' "$KEY_ALIAS"

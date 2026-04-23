@@ -6,6 +6,10 @@ import {
   patchPersistedUiState,
 } from "../services/uiState";
 import type { NetworkConfig, NetworkDraft } from "../types/network";
+import {
+  normalizeAllowedExplorerUrl,
+  normalizeAllowedRpcUrl,
+} from "../utils/runtimeSafety";
 import { useWalletStore } from "./wallet";
 
 const presetNetworks: NetworkConfig[] = [
@@ -93,25 +97,20 @@ function normalizeNetworkDraft(draft: NetworkDraft): NetworkDraft {
   };
 }
 
-function isLoopbackHost(hostname: string) {
-  return (
-    hostname === "localhost" ||
-    hostname === "127.0.0.1" ||
-    hostname === "[::1]" ||
-    hostname === "::1"
-  );
-}
-
-function isAllowedNetworkUrl(url: URL) {
-  return url.protocol === "https:" || (url.protocol === "http:" && isLoopbackHost(url.hostname));
-}
-
 function isPersistedCustomNetwork(value: unknown): value is NetworkConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
   }
 
   const network = value as Record<string, unknown>;
+  const rpcUrl =
+    typeof network.rpcUrl === "string" ? normalizeAllowedRpcUrl(network.rpcUrl) : null;
+  const explorerUrl =
+    typeof network.explorerUrl === "string"
+      ? normalizeAllowedExplorerUrl(network.explorerUrl)
+      : network.explorerUrl === undefined
+        ? undefined
+        : null;
 
   return (
     typeof network.id === "string" &&
@@ -119,11 +118,9 @@ function isPersistedCustomNetwork(value: unknown): value is NetworkConfig {
     typeof network.chainId === "number" &&
     Number.isInteger(network.chainId) &&
     network.chainId > 0 &&
-    typeof network.rpcUrl === "string" &&
+    rpcUrl !== null &&
     typeof network.symbol === "string" &&
-    (!("explorerUrl" in network) ||
-      typeof network.explorerUrl === "string" ||
-      typeof network.explorerUrl === "undefined")
+    explorerUrl !== null
   );
 }
 
@@ -134,10 +131,20 @@ function hydrateCustomNetworks(value: unknown) {
 
   return value
     .filter(isPersistedCustomNetwork)
-    .map((network) => ({
-      ...network,
-      source: "custom" as const,
-    }));
+    .map((network) => {
+      const normalizedRpcUrl =
+        normalizeAllowedRpcUrl(network.rpcUrl)?.toString() ?? network.rpcUrl;
+      const normalizedExplorerUrl = network.explorerUrl
+        ? normalizeAllowedExplorerUrl(network.explorerUrl)?.toString() ?? undefined
+        : undefined;
+
+      return {
+        ...network,
+        rpcUrl: normalizedRpcUrl,
+        explorerUrl: normalizedExplorerUrl,
+        source: "custom" as const,
+      };
+    });
 }
 
 export const useNetworksStore = defineStore("networks", () => {
@@ -173,8 +180,7 @@ export const useNetworksStore = defineStore("networks", () => {
     }
 
     try {
-      const rpc = new URL(normalizedDraft.rpcUrl);
-      if (!isAllowedNetworkUrl(rpc)) {
+      if (!normalizeAllowedRpcUrl(normalizedDraft.rpcUrl)) {
         errors.push("RPC URL 必须是 HTTPS 地址，或本机回环地址上的 HTTP/HTTPS");
       }
     } catch {
@@ -187,8 +193,7 @@ export const useNetworksStore = defineStore("networks", () => {
 
     if (normalizedDraft.explorerUrl) {
       try {
-        const explorer = new URL(normalizedDraft.explorerUrl);
-        if (!isAllowedNetworkUrl(explorer)) {
+        if (!normalizeAllowedExplorerUrl(normalizedDraft.explorerUrl)) {
           errors.push("区块浏览器 URL 必须是 HTTPS 地址，或本机回环地址上的 HTTP/HTTPS");
         }
       } catch {
@@ -228,14 +233,28 @@ export const useNetworksStore = defineStore("networks", () => {
     const nextNetworkId = shouldRotateScopeId
       ? `custom-${Number(normalizedDraft.chainId)}`
       : editingId ?? `custom-${Number(normalizedDraft.chainId)}`;
+    const normalizedRpcUrl = normalizeAllowedRpcUrl(normalizedDraft.rpcUrl);
+    const normalizedExplorerUrl = normalizedDraft.explorerUrl
+      ? normalizeAllowedExplorerUrl(normalizedDraft.explorerUrl)
+      : null;
+
+    if (!normalizedRpcUrl || (normalizedDraft.explorerUrl && !normalizedExplorerUrl)) {
+      return {
+        ok: false as const,
+        errors: ["网络 URL 校验失败，请重新检查 RPC / 区块浏览器地址"],
+      };
+    }
+
     const nextNetwork: NetworkConfig = {
       id: nextNetworkId,
       source: "custom",
       name: normalizedDraft.name,
       chainId: Number(normalizedDraft.chainId),
-      rpcUrl: normalizedDraft.rpcUrl,
+      rpcUrl: normalizedRpcUrl.toString(),
       symbol: normalizedDraft.symbol,
-      explorerUrl: normalizedDraft.explorerUrl || undefined,
+      explorerUrl: normalizedDraft.explorerUrl
+        ? normalizedExplorerUrl?.toString() ?? undefined
+        : undefined,
     };
 
     if (editingId) {

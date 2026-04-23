@@ -4,6 +4,11 @@
   "version": "0.1.0",
   "type": "module",
   "packageManager": "pnpm@10.12.1",
+  "pnpm": {
+    "overrides": {
+      "glob": "^10.5.0"
+    }
+  },
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc --noEmit && vite build",
@@ -15,6 +20,9 @@
     "android:release": "bash ./build_apk",
     "android:keystore": "bash scripts/generate-android-keystore.sh",
     "android:sign": "bash scripts/sign-android-apk.sh",
+    "test": "pnpm test:rust && pnpm test:unit",
+    "test:rust": "cargo test -q --manifest-path src-tauri/Cargo.toml",
+    "test:security": "pnpm test:rust && pnpm test:unit",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -39,7 +47,7 @@
     "@vue/test-utils": "^2.4.6",
     "jsdom": "^29.0.1",
     "typescript": "^6.0.2",
-    "vite": "^8.0.3",
+    "vite": "^8.0.5",
     "vitest": "^4.1.2",
     "vue-tsc": "^3.2.6"
   }

@@ -63,17 +63,12 @@ function getSubtleCrypto() {
 }
 
 function getRandomBytes(length: number) {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("当前运行环境缺少安全随机数来源，无法继续处理本地密钥材料");
+  }
+
   const bytes = new Uint8Array(length);
-
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-    return bytes;
-  }
-
-  for (let index = 0; index < length; index += 1) {
-    bytes[index] = Math.floor(Math.random() * 256);
-  }
-
+  globalThis.crypto.getRandomValues(bytes);
   return bytes;
 }
 

@@ -9,13 +9,18 @@ DEFAULT_KEYSTORE_PATH="$PROJECT_ROOT/.local/android-upload.keystore"
 DEFAULT_KEY_ALIAS="upload"
 DEFAULT_RELEASE_DIR="$PROJECT_ROOT/release"
 DEFAULT_BUILD_TARGET="aarch64"
+APK_OUTPUT_DIR="$PROJECT_ROOT/src-tauri/gen/android/app/build/outputs/apk"
 
 KEYSTORE_PATH="${ANDROID_KEYSTORE_PATH:-$DEFAULT_KEYSTORE_PATH}"
 KEY_ALIAS="${ANDROID_KEY_ALIAS:-$DEFAULT_KEY_ALIAS}"
 RELEASE_DIR="${ANDROID_RELEASE_DIR:-$DEFAULT_RELEASE_DIR}"
 BUILD_TARGET="${ANDROID_BUILD_TARGET:-$DEFAULT_BUILD_TARGET}"
+ALLOW_NEW_KEYSTORE="${ALLOW_NEW_KEYSTORE:-0}"
 STORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-}"
 KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-}"
+STORE_PASSWORD_FILE="${ANDROID_KEYSTORE_PASSWORD_FILE:-}"
+KEY_PASSWORD_FILE="${ANDROID_KEY_PASSWORD_FILE:-}"
+CREATE_KEYSTORE=0
 
 usage() {
   cat <<'EOF'
@@ -25,6 +30,7 @@ Usage:
 Options:
   --target TARGET       Android build target, default: aarch64
   --universal           Build all ABIs into a universal APK
+  --create-keystore     Allow minting a new release keystore when none exists
   --release-dir PATH    Directory to copy the final APK into
   --help                Show this help
 
@@ -33,9 +39,35 @@ Environment variables:
   ANDROID_KEY_ALIAS
   ANDROID_KEYSTORE_PASSWORD
   ANDROID_KEY_PASSWORD
+  ANDROID_KEYSTORE_PASSWORD_FILE
+  ANDROID_KEY_PASSWORD_FILE
   ANDROID_RELEASE_DIR
   ANDROID_BUILD_TARGET
+  ALLOW_NEW_KEYSTORE
 EOF
+}
+
+is_truthy() {
+  local value="${1:-}"
+  value="${value,,}"
+  case "$value" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+read_secret_from_file() {
+  local file_path="$1"
+  [[ -f "$file_path" ]] || {
+    printf 'Secret file not found: %s\n' "$file_path" >&2
+    exit 1
+  }
+  IFS= read -r secret < "$file_path" || true
+  printf '%s' "$secret"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -46,6 +78,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --universal)
       BUILD_TARGET=""
+      shift
+      ;;
+    --create-keystore)
+      CREATE_KEYSTORE=1
       shift
       ;;
     --release-dir)
@@ -74,12 +110,31 @@ if ! command -v pnpm >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ ! -f "$KEYSTORE_PATH" && $CREATE_KEYSTORE -eq 0 ]] && ! is_truthy "$ALLOW_NEW_KEYSTORE"; then
+  printf 'Keystore not found: %s\n' "$KEYSTORE_PATH" >&2
+  printf 'Refusing to mint a new release keystore implicitly.\n' >&2
+  printf 'Run `pnpm android:keystore` first, or pass `--create-keystore` / `ALLOW_NEW_KEYSTORE=1` if you intentionally want a new signing identity.\n' >&2
+  exit 1
+fi
+
 APP_NAME="$(node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((pkg.name || "app").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$PROJECT_ROOT/package.json")"
 APP_VERSION="$(node -e 'const fs=require("fs"); const cfg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((cfg.version || "0.0.0").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$PROJECT_ROOT/src-tauri/tauri.conf.json")"
 
 if [[ -z "$STORE_PASSWORD" ]]; then
+  if [[ -n "$STORE_PASSWORD_FILE" ]]; then
+    STORE_PASSWORD="$(read_secret_from_file "$STORE_PASSWORD_FILE")"
+  fi
+fi
+
+if [[ -z "$STORE_PASSWORD" ]]; then
   read -r -s -p "Keystore password: " STORE_PASSWORD
   printf '\n'
+fi
+
+if [[ -z "$KEY_PASSWORD" ]]; then
+  if [[ -n "$KEY_PASSWORD_FILE" ]]; then
+    KEY_PASSWORD="$(read_secret_from_file "$KEY_PASSWORD_FILE")"
+  fi
 fi
 
 if [[ -z "$KEY_PASSWORD" ]]; then
@@ -90,17 +145,42 @@ if [[ -z "$KEY_PASSWORD" ]]; then
   fi
 fi
 
+TMP_SECRET_DIR="$(mktemp -d)"
+cleanup_secret_files() {
+  rm -rf "$TMP_SECRET_DIR"
+}
+trap cleanup_secret_files EXIT
+
+TMP_STORE_PASSWORD_FILE="$TMP_SECRET_DIR/keystore.pass"
+TMP_KEY_PASSWORD_FILE="$TMP_SECRET_DIR/key.pass"
+OLD_UMASK="$(umask)"
+umask 077
+printf '%s' "$STORE_PASSWORD" > "$TMP_STORE_PASSWORD_FILE"
+printf '%s' "$KEY_PASSWORD" > "$TMP_KEY_PASSWORD_FILE"
+umask "$OLD_UMASK"
+unset STORE_PASSWORD KEY_PASSWORD STORE_PASSWORD_FILE KEY_PASSWORD_FILE
+
 if [[ ! -f "$KEYSTORE_PATH" ]]; then
   printf 'Keystore not found. Creating: %s\n' "$KEYSTORE_PATH"
   ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH" \
   ANDROID_KEY_ALIAS="$KEY_ALIAS" \
-  ANDROID_KEYSTORE_PASSWORD="$STORE_PASSWORD" \
-  ANDROID_KEY_PASSWORD="$KEY_PASSWORD" \
+  ANDROID_KEYSTORE_PASSWORD_FILE="$TMP_STORE_PASSWORD_FILE" \
+  ANDROID_KEY_PASSWORD_FILE="$TMP_KEY_PASSWORD_FILE" \
     bash "$PROJECT_ROOT/scripts/generate-android-keystore.sh" --out "$KEYSTORE_PATH" --alias "$KEY_ALIAS"
 fi
 
 BUILD_CMD=(pnpm tauri android build --apk)
 TARGET_LABEL="universal"
+declare -A BEFORE_BUILD_UNSIGNED_APKS=()
+
+file_mtime_seconds() {
+  local file_path="$1"
+  stat -c %Y "$file_path" 2>/dev/null || stat -f %m "$file_path"
+}
+
+while IFS= read -r -d '' existing_apk; do
+  BEFORE_BUILD_UNSIGNED_APKS["$existing_apk"]="$(file_mtime_seconds "$existing_apk")"
+done < <(find "$APK_OUTPUT_DIR" -type f -name '*unsigned.apk' -print0 2>/dev/null)
 
 if [[ -n "$BUILD_TARGET" ]]; then
   BUILD_CMD+=(--target "$BUILD_TARGET")
@@ -136,17 +216,27 @@ bash "$PROJECT_ROOT/scripts/sync-android-system-bars.sh"
   "${BUILD_CMD[@]}"
 )
 
-UNSIGNED_APK="$(
-  find "$PROJECT_ROOT/src-tauri/gen/android/app/build/outputs/apk" -type f -name '*unsigned.apk' -printf '%T@ %p\n' \
-    | sort -nr \
-    | head -n 1 \
-    | cut -d' ' -f2-
-)"
+unsigned_candidates=()
+while IFS= read -r -d '' candidate_apk; do
+  current_mtime="$(file_mtime_seconds "$candidate_apk")"
+  previous_mtime="${BEFORE_BUILD_UNSIGNED_APKS[$candidate_apk]:-}"
+  if [[ -z "$previous_mtime" || "$current_mtime" -gt "$previous_mtime" ]]; then
+    unsigned_candidates+=("$candidate_apk")
+  fi
+done < <(find "$APK_OUTPUT_DIR" -type f -name '*unsigned.apk' -print0 2>/dev/null)
 
-if [[ -z "$UNSIGNED_APK" || ! -f "$UNSIGNED_APK" ]]; then
+if [[ ${#unsigned_candidates[@]} -eq 0 ]]; then
   printf 'Unsigned APK not found after build\n' >&2
   exit 1
 fi
+
+if [[ ${#unsigned_candidates[@]} -gt 1 ]]; then
+  printf 'More than one unsigned APK changed during this build. Refusing to guess which artifact to sign:\n' >&2
+  printf '  %s\n' "${unsigned_candidates[@]}" >&2
+  exit 1
+fi
+
+UNSIGNED_APK="${unsigned_candidates[0]}"
 
 mkdir -p "$RELEASE_DIR"
 
@@ -155,8 +245,8 @@ LATEST_APK="$RELEASE_DIR/${APP_NAME}-android-release.apk"
 
 ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH" \
 ANDROID_KEY_ALIAS="$KEY_ALIAS" \
-ANDROID_KEYSTORE_PASSWORD="$STORE_PASSWORD" \
-ANDROID_KEY_PASSWORD="$KEY_PASSWORD" \
+ANDROID_KEYSTORE_PASSWORD_FILE="$TMP_STORE_PASSWORD_FILE" \
+ANDROID_KEY_PASSWORD_FILE="$TMP_KEY_PASSWORD_FILE" \
   bash "$PROJECT_ROOT/scripts/sign-android-apk.sh" \
     --in "$UNSIGNED_APK" \
     --out "$FINAL_APK" \

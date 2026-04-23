@@ -30,6 +30,16 @@ use zeroize::Zeroizing;
 const STRONGHOLD_CLIENT: &[u8] = b"wallet-core";
 const STRONGHOLD_RECORD: &[u8] = b"primary-secret";
 const SALT_LENGTH: usize = 32;
+const PENDING_TRANSFER_CONFIRMATION_TTL_SECONDS: i64 = 300;
+const SENSITIVE_ATTEMPT_RESET_SECONDS: i64 = 15 * 60;
+const SENSITIVE_ATTEMPT_BASE_LOCK_SECONDS: i64 = 2;
+const SENSITIVE_ATTEMPT_MAX_LOCK_SECONDS: i64 = 300;
+const SENSITIVE_ATTEMPT_GRACE_FAILURES: u32 = 3;
+const SENSITIVE_OPERATION_UNLOCK: &str = "unlock_wallet";
+const SENSITIVE_OPERATION_SIGN_TRANSFER: &str = "sign_transfer_transaction";
+const SENSITIVE_OPERATION_DELETE_ACCOUNT: &str = "delete_wallet_account";
+const SENSITIVE_OPERATION_DERIVE_ACCOUNT: &str = "derive_mnemonic_account";
+const SENSITIVE_OPERATION_GET_BACKUP_PHRASE: &str = "get_pending_backup_phrase";
 const ETH_BIP44_PREFIX: [u32; 4] = [44 + BIP32_HARDEN, 60 + BIP32_HARDEN, 0 + BIP32_HARDEN, 0];
 const BIP32_HARDEN: u32 = 0x8000_0000;
 
@@ -40,7 +50,8 @@ type WalletCommandResult<T> = Result<T, WalletError>;
 pub struct WalletRuntimeState {
     mutation_lock: Mutex<()>,
     pending_onboarding: Mutex<Option<PendingOnboarding>>,
-    pending_transfer_confirmation: Mutex<Option<PendingTransferConfirmation>>,
+    pending_transfer_confirmations: Mutex<HashMap<String, PendingTransferConfirmation>>,
+    sensitive_operation_attempts: Mutex<HashMap<String, SensitiveOperationAttemptState>>,
 }
 
 #[derive(Debug, Clone)]
@@ -53,8 +64,15 @@ struct PendingOnboarding {
 
 #[derive(Debug, Clone)]
 struct PendingTransferConfirmation {
-    confirmation_id: String,
     request: PreparedTransferRequest,
+    prepared_at_unix_seconds: i64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SensitiveOperationAttemptState {
+    failed_attempts: u32,
+    lock_until_unix_seconds: i64,
+    last_failed_unix_seconds: i64,
 }
 
 #[derive(Debug)]
@@ -277,9 +295,9 @@ pub enum FeeMode {
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum TransferAsset {
     Native,
-    Erc20 { 
+    Erc20 {
         #[serde(rename = "contractAddress")]
-        contract_address: String 
+        contract_address: String,
     },
 }
 
@@ -465,6 +483,99 @@ pub enum WalletError {
     InvalidPreparedTransferConfirmation,
     #[error("交易签名失败: {0}")]
     SigningFailed(String),
+    #[error("操作过于频繁，请在 {retry_after_seconds} 秒后重试")]
+    TooManySensitiveAttempts { retry_after_seconds: u64 },
+}
+
+impl WalletError {
+    fn public_error_tier(&self) -> &'static str {
+        match self {
+            WalletError::TooManySensitiveAttempts { .. } => "RATE_LIMIT",
+            WalletError::InvalidPendingBackupAccess | WalletError::InvalidWalletPassword => "AUTH",
+            WalletError::EmptyWalletLabel
+            | WalletError::PasswordTooShort
+            | WalletError::EmptyImportSecret
+            | WalletError::DuplicateWalletAddress
+            | WalletError::MnemonicDerivationNotSupported
+            | WalletError::InvalidMnemonic(_)
+            | WalletError::InvalidPrivateKey
+            | WalletError::InvalidAddress(_)
+            | WalletError::InvalidDecimalField(_)
+            | WalletError::MissingField(_)
+            | WalletError::InvalidEip1559Fees => "VALIDATION",
+            WalletError::NoPendingWallet
+            | WalletError::PendingOnboardingInProgress
+            | WalletError::BackupPhraseRevealRequired
+            | WalletError::BackupConfirmationRequired
+            | WalletError::InvalidPendingWallet
+            | WalletError::WalletNotInitialized
+            | WalletError::WalletAccountNotFound
+            | WalletError::MissingPreparedTransferConfirmation
+            | WalletError::InvalidPreparedTransferConfirmation => "STATE",
+            WalletError::KeyDerivationFailed
+            | WalletError::PathUnavailable
+            | WalletError::StrongholdSaltMissing
+            | WalletError::Io(_)
+            | WalletError::Stronghold(_)
+            | WalletError::Database(_)
+            | WalletError::MetadataCorrupted(_)
+            | WalletError::MissingSigningSecret
+            | WalletError::InvalidStoredSecret
+            | WalletError::SigningFailed(_) => "INTERNAL",
+        }
+    }
+
+    fn public_message(&self) -> String {
+        match self {
+            WalletError::EmptyWalletLabel => "钱包名称不能为空".into(),
+            WalletError::PasswordTooShort => "钱包密码至少需要 8 位".into(),
+            WalletError::NoPendingWallet => "当前没有待确认的创建流程".into(),
+            WalletError::PendingOnboardingInProgress => {
+                "当前有一笔待完成的备份流程，请先完成或取消后再继续。".into()
+            }
+            WalletError::InvalidPendingBackupAccess => "当前备份会话已失效，请重新创建钱包".into(),
+            WalletError::BackupPhraseRevealRequired => "请先查看助记词，再完成备份确认".into(),
+            WalletError::BackupConfirmationRequired => "你必须确认已经离线备份助记词".into(),
+            WalletError::InvalidPendingWallet => "待确认钱包数据异常".into(),
+            WalletError::EmptyImportSecret => "导入内容不能为空".into(),
+            WalletError::DuplicateWalletAddress => "当前地址已经存在于账号列表".into(),
+            WalletError::MnemonicDerivationNotSupported => "只有助记词账号支持派生新地址".into(),
+            WalletError::InvalidMnemonic(_) => "助记词格式不正确".into(),
+            WalletError::InvalidPrivateKey => "私钥格式不正确，需要 64 位十六进制字符串".into(),
+            WalletError::KeyDerivationFailed => "密钥派生失败，请稍后重试".into(),
+            WalletError::PathUnavailable => "无法访问本地钱包目录".into(),
+            WalletError::StrongholdSaltMissing => {
+                "本地钱包盐文件缺失，请恢复原始 salt.txt 后再试".into()
+            }
+            WalletError::Io(_)
+            | WalletError::Stronghold(_)
+            | WalletError::Database(_)
+            | WalletError::MetadataCorrupted(_)
+            | WalletError::MissingSigningSecret
+            | WalletError::InvalidStoredSecret
+            | WalletError::SigningFailed(_) => "当前无法完成本地安全操作，请稍后重试".into(),
+            WalletError::WalletNotInitialized => "当前还没有初始化钱包".into(),
+            WalletError::WalletAccountNotFound => "当前找不到要操作的账号".into(),
+            WalletError::InvalidWalletPassword => "钱包密码不正确，请重试".into(),
+            WalletError::InvalidAddress(label) => format!("{label} 不是合法的 EVM 地址"),
+            WalletError::InvalidDecimalField(label) => format!("{label} 必须是合法的十进制正整数"),
+            WalletError::MissingField(label) => format!("发送参数缺少 {label}"),
+            WalletError::InvalidEip1559Fees => "EIP-1559 费用参数不合法".into(),
+            WalletError::MissingPreparedTransferConfirmation => {
+                "确认摘要已过期，请重新生成确认摘要后再继续签名".into()
+            }
+            WalletError::InvalidPreparedTransferConfirmation => {
+                "确认摘要与当前账号不匹配，请重新生成确认摘要后再继续签名".into()
+            }
+            WalletError::TooManySensitiveAttempts {
+                retry_after_seconds,
+            } => format!("尝试次数过多，请在 {retry_after_seconds} 秒后重试"),
+        }
+    }
+
+    fn public_error_text(&self) -> String {
+        format!("[{}] {}", self.public_error_tier(), self.public_message())
+    }
 }
 
 impl Serialize for WalletError {
@@ -472,7 +583,7 @@ impl Serialize for WalletError {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&self.to_string())
+        serializer.serialize_str(&self.public_error_text())
     }
 }
 
@@ -483,6 +594,8 @@ pub fn create_wallet(
     request: CreateWalletRequest,
 ) -> WalletCommandResult<PendingWalletSession> {
     let request = normalize_create_request(request)?;
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
+
     if get_pending_onboarding(&app, &state)?.is_some() {
         return Err(WalletError::PendingOnboardingInProgress);
     }
@@ -494,7 +607,7 @@ pub fn create_wallet(
     ensure_wallet_address_is_unique(&app, &address)?;
     let account_id = build_account_id(&address);
     let backup_access_token = generate_pending_backup_access_token();
-    let snapshot_path = pending_snapshot_path(&app)?;
+    let snapshot_path = pending_snapshot_path(&app, &backup_access_token)?;
     reset_snapshot_file(&snapshot_path)?;
 
     let draft = PendingWalletDraft {
@@ -539,10 +652,12 @@ pub fn load_pending_wallet_session(
     app: AppHandle,
     state: State<'_, WalletRuntimeState>,
 ) -> WalletCommandResult<Option<PendingWalletSession>> {
-    Ok(get_pending_onboarding(&app, &state)?.map(|pending| PendingWalletSession {
-        draft: pending.draft,
-        backup_access_token: pending.backup_access_token,
-    }))
+    Ok(
+        get_pending_onboarding(&app, &state)?.map(|pending| PendingWalletSession {
+            draft: pending.draft,
+            backup_access_token: pending.backup_access_token,
+        }),
+    )
 }
 
 #[tauri::command]
@@ -551,6 +666,11 @@ pub fn get_pending_backup_phrase(
     state: State<'_, WalletRuntimeState>,
     request: GetPendingBackupPhraseRequest,
 ) -> WalletCommandResult<String> {
+    let sensitive_key = sensitive_operation_key(
+        SENSITIVE_OPERATION_GET_BACKUP_PHRASE,
+        &request.backup_access_token,
+    );
+    ensure_sensitive_operation_allowed(&state, &sensitive_key)?;
     let pending = get_pending_onboarding(&app, &state)?.ok_or(WalletError::NoPendingWallet)?;
 
     if !matches!(pending.draft.secret_kind, SecretKind::Mnemonic) {
@@ -561,7 +681,16 @@ pub fn get_pending_backup_phrase(
         return Err(WalletError::InvalidPendingBackupAccess);
     }
 
-    let mnemonic = load_pending_mnemonic(&app, &pending, &request.password)?;
+    let mnemonic = match load_pending_mnemonic(&app, &pending, &request.password) {
+        Ok(mnemonic) => mnemonic,
+        Err(error) => {
+            if is_sensitive_password_failure(&error) {
+                record_sensitive_operation_failure(&state, &sensitive_key);
+            }
+            return Err(error);
+        }
+    };
+    clear_sensitive_operation_failure(&state, &sensitive_key);
     mark_pending_onboarding_revealed(&app, &state)?;
 
     Ok(mnemonic)
@@ -617,10 +746,7 @@ pub fn finalize_pending_wallet(
         snapshot_path: final_snapshot_path.to_string_lossy().into_owned(),
     };
 
-    let result = save_wallet_metadata(
-        &app,
-        &finalized_metadata,
-    );
+    let result = save_wallet_metadata(&app, &finalized_metadata);
 
     match result {
         Ok(()) => {
@@ -645,7 +771,7 @@ pub fn import_wallet(
     let request = normalize_import_request(request)?;
     let _mutation_guard = state.mutation_lock.lock().unwrap();
 
-    if state.pending_onboarding.lock().unwrap().is_some() {
+    if get_pending_onboarding(&app, &state)?.is_some() {
         return Err(WalletError::PendingOnboardingInProgress);
     }
 
@@ -703,6 +829,9 @@ pub fn derive_mnemonic_account(
     request: DeriveMnemonicAccountRequest,
 ) -> WalletCommandResult<WalletProfile> {
     let request = normalize_derive_request(request)?;
+    let sensitive_key =
+        sensitive_operation_key(SENSITIVE_OPERATION_DERIVE_ACCOUNT, &request.source_account_id);
+    ensure_sensitive_operation_allowed(&state, &sensitive_key)?;
     let _mutation_guard = state.mutation_lock.lock().unwrap();
     let source_metadata = load_wallet_metadata(&app, &request.source_account_id)?
         .ok_or(WalletError::WalletNotInitialized)?;
@@ -711,7 +840,16 @@ pub fn derive_mnemonic_account(
         return Err(WalletError::MnemonicDerivationNotSupported);
     }
 
-    let mnemonic = load_mnemonic_for_derivation(&app, &source_metadata, &request.password)?;
+    let mnemonic = match load_mnemonic_for_derivation(&app, &source_metadata, &request.password) {
+        Ok(mnemonic) => mnemonic,
+        Err(error) => {
+            if is_sensitive_password_failure(&error) {
+                record_sensitive_operation_failure(&state, &sensitive_key);
+            }
+            return Err(error);
+        }
+    };
+    clear_sensitive_operation_failure(&state, &sensitive_key);
     let next_derivation_index =
         next_mnemonic_derivation_index(&app, &source_metadata.derivation_group_id)?;
     let private_key = derive_private_key_from_mnemonic(&mnemonic, next_derivation_index)?;
@@ -772,10 +910,21 @@ pub fn delete_wallet_account(
     state: State<'_, WalletRuntimeState>,
     request: DeleteWalletAccountRequest,
 ) -> WalletCommandResult<WalletSessionSnapshot> {
+    let sensitive_key =
+        sensitive_operation_key(SENSITIVE_OPERATION_DELETE_ACCOUNT, &request.account_id);
+    ensure_sensitive_operation_allowed(&state, &sensitive_key)?;
     let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = load_wallet_metadata(&app, &request.account_id)?
         .ok_or(WalletError::WalletAccountNotFound)?;
-    load_secret_record(&app, &metadata, &request.password)?;
+    match load_secret_record(&app, &metadata, &request.password) {
+        Ok(_) => clear_sensitive_operation_failure(&state, &sensitive_key),
+        Err(error) => {
+            if is_sensitive_password_failure(&error) {
+                record_sensitive_operation_failure(&state, &sensitive_key);
+            }
+            return Err(error);
+        }
+    }
     let deleted_account_id = metadata.account_id.clone();
     let deleted_snapshot_path = metadata.snapshot_path.clone();
     let previous_active_account_id = load_active_account_id(&app)?;
@@ -853,6 +1002,8 @@ pub fn unlock_wallet(
     state: State<'_, WalletRuntimeState>,
     request: UnlockWalletRequest,
 ) -> WalletCommandResult<Option<WalletProfile>> {
+    let sensitive_key = sensitive_operation_key(SENSITIVE_OPERATION_UNLOCK, &request.account_id);
+    ensure_sensitive_operation_allowed(&state, &sensitive_key)?;
     let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = load_wallet_metadata(&app, &request.account_id)?
         .ok_or(WalletError::WalletAccountNotFound)?;
@@ -868,6 +1019,7 @@ pub fn unlock_wallet(
         Ok(stronghold) => stronghold,
         Err(error) => {
             if should_mask_unlock_error(&error) {
+                record_sensitive_operation_failure(&state, &sensitive_key);
                 return Ok(None);
             }
 
@@ -878,7 +1030,16 @@ pub fn unlock_wallet(
     stronghold
         .load_client(STRONGHOLD_CLIENT.to_vec())
         .map_err(|_| WalletError::MissingSigningSecret)?;
-    let _validated_private_key = load_private_key_for_signing(&app, &metadata, &request.password)?;
+    match load_private_key_for_signing(&app, &metadata, &request.password) {
+        Ok(_) => clear_sensitive_operation_failure(&state, &sensitive_key),
+        Err(error) => {
+            if is_sensitive_password_failure(&error) {
+                record_sensitive_operation_failure(&state, &sensitive_key);
+                return Ok(None);
+            }
+            return Err(error);
+        }
+    }
 
     let unlocked_at = now_rfc3339();
     update_last_unlocked_at(&app, &request.account_id, &unlocked_at)?;
@@ -936,14 +1097,20 @@ pub fn prepare_transfer_confirmation(
     state: State<'_, WalletRuntimeState>,
     request: PreparedTransferRequest,
 ) -> WalletCommandResult<PreparedTransferSession> {
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
     load_wallet_metadata(&app, &request.account_id)?.ok_or(WalletError::WalletNotInitialized)?;
     build_transfer_transaction(&request)?;
 
     let confirmation_id = generate_pending_backup_access_token();
-    *state.pending_transfer_confirmation.lock().unwrap() = Some(PendingTransferConfirmation {
-        confirmation_id: confirmation_id.clone(),
-        request,
-    });
+    let mut confirmations = state.pending_transfer_confirmations.lock().unwrap();
+    prune_expired_transfer_confirmations(&mut confirmations);
+    confirmations.insert(
+        confirmation_id.clone(),
+        PendingTransferConfirmation {
+            request,
+            prepared_at_unix_seconds: now_unix_seconds(),
+        },
+    );
 
     Ok(PreparedTransferSession { confirmation_id })
 }
@@ -954,24 +1121,39 @@ pub fn sign_transfer_transaction(
     state: State<'_, WalletRuntimeState>,
     request: SignTransferRequest,
 ) -> WalletCommandResult<SignedTransferPayload> {
-    let prepared_confirmation = state
-        .pending_transfer_confirmation
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or(WalletError::MissingPreparedTransferConfirmation)?;
+    let sensitive_key =
+        sensitive_operation_key(SENSITIVE_OPERATION_SIGN_TRANSFER, &request.account_id);
+    ensure_sensitive_operation_allowed(&state, &sensitive_key)?;
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
+    let prepared_confirmation = {
+        let mut confirmations = state.pending_transfer_confirmations.lock().unwrap();
+        prune_expired_transfer_confirmations(&mut confirmations);
+        let prepared = confirmations
+            .get(&request.confirmation_id)
+            .cloned()
+            .ok_or(WalletError::MissingPreparedTransferConfirmation)?;
 
-    if prepared_confirmation.confirmation_id != request.confirmation_id {
-        return Err(WalletError::MissingPreparedTransferConfirmation);
-    }
+        if prepared.request.account_id != request.account_id {
+            return Err(WalletError::InvalidPreparedTransferConfirmation);
+        }
 
-    if prepared_confirmation.request.account_id != request.account_id {
-        return Err(WalletError::InvalidPreparedTransferConfirmation);
-    }
+        prepared
+    };
 
     let metadata = load_wallet_metadata(&app, &prepared_confirmation.request.account_id)?
         .ok_or(WalletError::WalletNotInitialized)?;
-    let private_key = load_private_key_for_signing(&app, &metadata, &request.password)?;
+    let private_key = match load_private_key_for_signing(&app, &metadata, &request.password) {
+        Ok(private_key) => {
+            clear_sensitive_operation_failure(&state, &sensitive_key);
+            private_key
+        }
+        Err(error) => {
+            if is_sensitive_password_failure(&error) {
+                record_sensitive_operation_failure(&state, &sensitive_key);
+            }
+            return Err(error);
+        }
+    };
     let tx = build_transfer_transaction(&prepared_confirmation.request)?;
 
     let signer = PrivateKeySigner::from_slice(private_key.as_ref())
@@ -981,7 +1163,11 @@ pub fn sign_transfer_transaction(
         .map_err(|error| WalletError::SigningFailed(error.to_string()))?;
     let envelope: TxEnvelope = tx.into_envelope(signature);
     let raw_transaction = envelope.encoded_2718();
-    *state.pending_transfer_confirmation.lock().unwrap() = None;
+    state
+        .pending_transfer_confirmations
+        .lock()
+        .unwrap()
+        .remove(&request.confirmation_id);
 
     Ok(SignedTransferPayload {
         raw_transaction: format!("0x{}", hex::encode(raw_transaction)),
@@ -1083,6 +1269,144 @@ fn normalize_rename_request(
 
 fn now_rfc3339() -> String {
     Utc::now().to_rfc3339()
+}
+
+fn now_unix_seconds() -> i64 {
+    Utc::now().timestamp()
+}
+
+fn is_transfer_confirmation_fresh(
+    confirmation: &PendingTransferConfirmation,
+    now_unix_seconds: i64,
+) -> bool {
+    confirmation
+        .prepared_at_unix_seconds
+        .checked_add(PENDING_TRANSFER_CONFIRMATION_TTL_SECONDS)
+        .is_some_and(|expires_at| expires_at >= now_unix_seconds)
+}
+
+fn prune_expired_transfer_confirmations(
+    confirmations: &mut HashMap<String, PendingTransferConfirmation>,
+) {
+    let now = now_unix_seconds();
+    confirmations.retain(|_, confirmation| is_transfer_confirmation_fresh(confirmation, now));
+}
+
+fn sensitive_operation_key(operation: &str, scope: &str) -> String {
+    let normalized_scope = scope.trim().to_ascii_lowercase();
+    let scope = if normalized_scope.is_empty() {
+        "global"
+    } else {
+        normalized_scope.as_str()
+    };
+    format!("{operation}:{scope}")
+}
+
+fn is_sensitive_password_failure(error: &WalletError) -> bool {
+    matches!(error, WalletError::InvalidWalletPassword)
+}
+
+fn prune_stale_sensitive_attempts(
+    attempts: &mut HashMap<String, SensitiveOperationAttemptState>,
+    now_unix_seconds: i64,
+) {
+    attempts.retain(|_, state| {
+        if state.lock_until_unix_seconds > now_unix_seconds {
+            return true;
+        }
+
+        now_unix_seconds.saturating_sub(state.last_failed_unix_seconds)
+            <= SENSITIVE_ATTEMPT_RESET_SECONDS
+    });
+}
+
+fn retry_after_seconds_for_sensitive_attempt(
+    attempts: &mut HashMap<String, SensitiveOperationAttemptState>,
+    operation_key: &str,
+    now_unix_seconds: i64,
+) -> Option<u64> {
+    prune_stale_sensitive_attempts(attempts, now_unix_seconds);
+    let state = attempts.get(operation_key)?;
+    if state.lock_until_unix_seconds <= now_unix_seconds {
+        return None;
+    }
+
+    Some((state.lock_until_unix_seconds - now_unix_seconds) as u64)
+}
+
+fn register_sensitive_operation_failure(
+    attempts: &mut HashMap<String, SensitiveOperationAttemptState>,
+    operation_key: &str,
+    now_unix_seconds: i64,
+) {
+    prune_stale_sensitive_attempts(attempts, now_unix_seconds);
+    let state = attempts
+        .entry(operation_key.to_owned())
+        .or_default();
+
+    if now_unix_seconds.saturating_sub(state.last_failed_unix_seconds)
+        > SENSITIVE_ATTEMPT_RESET_SECONDS
+    {
+        *state = SensitiveOperationAttemptState::default();
+    }
+
+    state.failed_attempts = state.failed_attempts.saturating_add(1);
+    state.last_failed_unix_seconds = now_unix_seconds;
+
+    if state.failed_attempts < SENSITIVE_ATTEMPT_GRACE_FAILURES {
+        state.lock_until_unix_seconds = 0;
+        return;
+    }
+
+    let exponent = state
+        .failed_attempts
+        .saturating_sub(SENSITIVE_ATTEMPT_GRACE_FAILURES)
+        .min(20);
+    let multiplier = 1i64.checked_shl(exponent).unwrap_or(i64::MAX);
+    let lock_seconds = SENSITIVE_ATTEMPT_BASE_LOCK_SECONDS
+        .saturating_mul(multiplier)
+        .min(SENSITIVE_ATTEMPT_MAX_LOCK_SECONDS);
+    state.lock_until_unix_seconds = now_unix_seconds.saturating_add(lock_seconds);
+}
+
+fn clear_sensitive_operation_failures(
+    attempts: &mut HashMap<String, SensitiveOperationAttemptState>,
+    operation_key: &str,
+) {
+    attempts.remove(operation_key);
+}
+
+fn ensure_sensitive_operation_allowed(
+    state: &State<'_, WalletRuntimeState>,
+    operation_key: &str,
+) -> Result<(), WalletError> {
+    let now = now_unix_seconds();
+    let mut attempts = state.sensitive_operation_attempts.lock().unwrap();
+    let retry_after =
+        retry_after_seconds_for_sensitive_attempt(&mut attempts, operation_key, now);
+
+    if let Some(retry_after_seconds) = retry_after {
+        return Err(WalletError::TooManySensitiveAttempts { retry_after_seconds });
+    }
+
+    Ok(())
+}
+
+fn record_sensitive_operation_failure(
+    state: &State<'_, WalletRuntimeState>,
+    operation_key: &str,
+) {
+    let now = now_unix_seconds();
+    let mut attempts = state.sensitive_operation_attempts.lock().unwrap();
+    register_sensitive_operation_failure(&mut attempts, operation_key, now);
+}
+
+fn clear_sensitive_operation_failure(
+    state: &State<'_, WalletRuntimeState>,
+    operation_key: &str,
+) {
+    let mut attempts = state.sensitive_operation_attempts.lock().unwrap();
+    clear_sensitive_operation_failures(&mut attempts, operation_key);
 }
 
 fn normalize_mnemonic_phrase(value: &str) -> String {
@@ -1691,8 +2015,14 @@ fn snapshot_path_for_account(app: &AppHandle, account_id: &str) -> Result<PathBu
     Ok(managed_snapshot_dir(app)?.join(format!("{account_id}.stronghold")))
 }
 
-fn pending_snapshot_path(app: &AppHandle) -> Result<PathBuf, WalletError> {
-    Ok(managed_snapshot_dir(app)?.join("pending-onboarding.stronghold"))
+fn pending_snapshot_path(
+    app: &AppHandle,
+    backup_access_token: &str,
+) -> Result<PathBuf, WalletError> {
+    let directory = managed_snapshot_dir(app)?;
+    Ok(directory.join(format!(
+        "pending-onboarding-{backup_access_token}.stronghold"
+    )))
 }
 
 fn reset_snapshot_file(path: &Path) -> Result<(), WalletError> {
@@ -2388,8 +2718,8 @@ fn load_pending_mnemonic(
         return Err(WalletError::InvalidPendingWallet);
     }
 
-    let mnemonic_phrase =
-        std::str::from_utf8(secret_record.as_ref()).map_err(|_| WalletError::InvalidPendingWallet)?;
+    let mnemonic_phrase = std::str::from_utf8(secret_record.as_ref())
+        .map_err(|_| WalletError::InvalidPendingWallet)?;
     let mnemonic = Mnemonic::parse_in_normalized(Language::English, mnemonic_phrase)
         .map_err(WalletError::from)?;
 
@@ -2438,7 +2768,10 @@ fn to_sql_conversion_error(error: WalletError) -> rusqlite::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::{
+        collections::HashMap,
+        time::{SystemTime, UNIX_EPOCH},
+    };
 
     fn unique_temp_dir(test_name: &str) -> PathBuf {
         let mut path = std::env::temp_dir();
@@ -2680,5 +3013,69 @@ mod tests {
             result,
             Err(rusqlite::Error::FromSqlConversionFailure(..))
         ));
+    }
+
+    #[test]
+    fn sensitive_operation_attempts_lock_after_repeated_failures() {
+        let mut attempts = HashMap::new();
+        let operation_key = sensitive_operation_key(SENSITIVE_OPERATION_UNLOCK, "account-1");
+
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 100);
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, 100),
+            None
+        );
+
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 101);
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, 101),
+            None
+        );
+
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 102);
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, 102),
+            Some(2)
+        );
+
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 105);
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, 105),
+            Some(4)
+        );
+    }
+
+    #[test]
+    fn sensitive_operation_attempts_reset_after_idle_window() {
+        let mut attempts = HashMap::new();
+        let operation_key = sensitive_operation_key(SENSITIVE_OPERATION_SIGN_TRANSFER, "account-2");
+
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 10);
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 11);
+        register_sensitive_operation_failure(&mut attempts, &operation_key, 12);
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, 12),
+            Some(2)
+        );
+
+        let after_window = 12 + SENSITIVE_ATTEMPT_RESET_SECONDS + 1;
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, after_window),
+            None
+        );
+
+        register_sensitive_operation_failure(&mut attempts, &operation_key, after_window);
+        assert_eq!(
+            retry_after_seconds_for_sensitive_attempt(&mut attempts, &operation_key, after_window),
+            None
+        );
+    }
+
+    #[test]
+    fn wallet_error_serialization_masks_internal_details() {
+        let serialized =
+            serde_json::to_string(&WalletError::Stronghold("db at /tmp/secret.db".into())).unwrap();
+        assert!(serialized.contains("[INTERNAL]"));
+        assert!(!serialized.contains("/tmp/secret.db"));
     }
 }

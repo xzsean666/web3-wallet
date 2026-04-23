@@ -32,8 +32,15 @@ import type {
   TransferPreview,
 } from "../types/portfolio";
 import type { TrackedToken, WalletAddress, WalletHex } from "../types/wallet";
+import { buildTransactionExplorerUrl } from "../utils/runtimeSafety";
+import { normalizeTokenName, normalizeTokenSymbol } from "../utils/tokenSafety";
 
 const clientCache = new Map<string, ReturnType<typeof createPublicClient>>();
+const MAX_NATIVE_TRANSFER_GAS_LIMIT = 100_000n;
+const MAX_ERC20_TRANSFER_GAS_LIMIT = 500_000n;
+const MAX_TRANSFER_FEE_PER_GAS_WEI = parseUnits("5000", 9);
+const MAX_PRIORITY_FEE_PER_GAS_WEI = parseUnits("1000", 9);
+const MAX_ESTIMATED_NETWORK_FEE_WEI = parseUnits("0.1", 18);
 
 interface TokenMetadata {
   symbol: string | null;
@@ -230,6 +237,26 @@ function describeTransferMessageFallback(
     );
   }
 
+  if (/gas limit 异常/.test(normalized)) {
+    return buildTransferFeedback(
+      stage,
+      "gas",
+      "Gas Limit 异常",
+      "当前 RPC 返回了明显异常的 Gas Limit，已拒绝继续使用这组估算参数。",
+      ["切换到可信 RPC 后重新估算", "不要继续使用这次返回的费用参数"],
+    );
+  }
+
+  if (/gas price 异常|max fee 异常|priority fee 异常|网络费异常|网络费已经高于发送金额/.test(normalized)) {
+    return buildTransferFeedback(
+      stage,
+      "fee",
+      "Gas 费用参数异常",
+      message,
+      ["切换到可信 RPC 后重新估算", "不要继续使用这次返回的费用参数"],
+    );
+  }
+
   if (/execution reverted|gas required exceeds allowance/.test(normalized)) {
     const reason = extractRevertReason(message);
 
@@ -253,6 +280,70 @@ function describeTransferMessageFallback(
   }
 
   return null;
+}
+
+function assertReasonableTransferQuote(options: {
+  assetType: "native" | "erc20";
+  amountWei: bigint;
+  gasLimit: bigint;
+  gasPriceWei: bigint | null;
+  maxFeePerGasWei: bigint | null;
+  maxPriorityFeePerGasWei: bigint | null;
+}) {
+  const gasLimitCap =
+    options.assetType === "native" ? MAX_NATIVE_TRANSFER_GAS_LIMIT : MAX_ERC20_TRANSFER_GAS_LIMIT;
+
+  if (options.gasLimit <= 0n || options.gasLimit > gasLimitCap) {
+    throw new Error("当前 RPC 返回的 Gas Limit 异常，已拒绝使用这组估算参数");
+  }
+
+  if (
+    options.gasPriceWei !== null &&
+    (options.gasPriceWei <= 0n || options.gasPriceWei > MAX_TRANSFER_FEE_PER_GAS_WEI)
+  ) {
+    throw new Error("当前 RPC 返回的 Gas Price 异常偏高，已拒绝使用这组估算参数");
+  }
+
+  if (
+    options.maxFeePerGasWei !== null &&
+    (options.maxFeePerGasWei <= 0n || options.maxFeePerGasWei > MAX_TRANSFER_FEE_PER_GAS_WEI)
+  ) {
+    throw new Error("当前 RPC 返回的 Max Fee 异常偏高，已拒绝使用这组估算参数");
+  }
+
+  if (
+    options.maxPriorityFeePerGasWei !== null &&
+    (
+      options.maxPriorityFeePerGasWei <= 0n ||
+      options.maxPriorityFeePerGasWei > MAX_PRIORITY_FEE_PER_GAS_WEI ||
+      (
+        options.maxFeePerGasWei !== null &&
+        options.maxPriorityFeePerGasWei > options.maxFeePerGasWei
+      )
+    )
+  ) {
+    throw new Error("当前 RPC 返回的 Priority Fee 异常，已拒绝使用这组估算参数");
+  }
+
+  const effectiveFeePerGas = options.maxFeePerGasWei ?? options.gasPriceWei;
+
+  if (effectiveFeePerGas === null) {
+    return;
+  }
+
+  const estimatedNetworkFee = options.gasLimit * effectiveFeePerGas;
+
+  if (estimatedNetworkFee > MAX_ESTIMATED_NETWORK_FEE_WEI) {
+    throw new Error("当前 RPC 返回的预计网络费异常偏高，已拒绝继续签名");
+  }
+
+  if (
+    options.assetType === "native" &&
+    options.amountWei > 0n &&
+    estimatedNetworkFee >= options.amountWei
+  ) {
+    throw new Error("当前预计网络费已经高于发送金额，已拒绝继续签名");
+  }
 }
 
 function describeSigningFailure(message: string): Omit<TransferErrorFeedback, "stage"> {
@@ -553,8 +644,8 @@ async function resolveTokenMetadata(options: {
 export function normalizeErc20TokenMetadata(
   metadata: TokenMetadata,
 ): Erc20TokenMetadata | null {
-  const symbol = metadata.symbol?.trim() ?? "";
-  const name = metadata.name?.trim() ?? "";
+  const symbol = normalizeTokenSymbol(metadata.symbol)?.toUpperCase() ?? "";
+  const name = normalizeTokenName(metadata.name, symbol) ?? "";
 
   if (!symbol) {
     return null;
@@ -764,6 +855,16 @@ export async function estimateTransferPreview(options: {
     });
     const feePerGas = feeMode === "eip1559" ? dynamicFees?.maxFeePerGas : legacyFees?.gasPrice;
 
+    assertReasonableTransferQuote({
+      assetType: "native",
+      amountWei: parsedAmount,
+      gasLimit,
+      gasPriceWei: feeMode === "legacy" ? legacyFees?.gasPrice ?? null : null,
+      maxFeePerGasWei: feeMode === "eip1559" ? dynamicFees?.maxFeePerGas ?? null : null,
+      maxPriorityFeePerGasWei:
+        feeMode === "eip1559" ? dynamicFees?.maxPriorityFeePerGas ?? null : null,
+    });
+
     return {
       assetType: "native",
       feeMode,
@@ -792,6 +893,16 @@ export async function estimateTransferPreview(options: {
     account: options.account,
   });
   const feePerGas = feeMode === "eip1559" ? dynamicFees?.maxFeePerGas : legacyFees?.gasPrice;
+
+  assertReasonableTransferQuote({
+    assetType: "erc20",
+    amountWei: parsedAmount,
+    gasLimit,
+    gasPriceWei: feeMode === "legacy" ? legacyFees?.gasPrice ?? null : null,
+    maxFeePerGasWei: feeMode === "eip1559" ? dynamicFees?.maxFeePerGas ?? null : null,
+    maxPriorityFeePerGasWei:
+      feeMode === "eip1559" ? dynamicFees?.maxPriorityFeePerGas ?? null : null,
+  });
 
   return {
     assetType: "erc20",
@@ -854,7 +965,7 @@ export async function validateRpcEndpoint(options: {
 
     return {
       status: "ok",
-      message: "RPC 可访问，Chain ID 与最新区块都已校验通过",
+      message: "RPC 可访问，Chain ID 与最新区块响应匹配，但这不代表该 RPC 可信",
       expectedChainId: options.expectedChainId,
       actualChainId,
       latestBlock: latestBlock.toString(),
@@ -896,6 +1007,26 @@ export async function fetchTransactionDetails(options: {
       ? await client.getBlock({ blockNumber: receipt.blockNumber }).catch(() => null)
       : null;
   const transactionTo = transaction.to as WalletAddress | null;
+
+  if (transaction.hash.toLowerCase() !== options.txHash.toLowerCase()) {
+    throw new Error("RPC 返回的交易哈希和请求不一致");
+  }
+
+  if (
+    receipt?.transactionHash &&
+    receipt.transactionHash.toLowerCase() !== options.txHash.toLowerCase()
+  ) {
+    throw new Error("RPC 返回的交易回执和请求哈希不一致");
+  }
+
+  if (
+    typeof transaction.blockHash === "string" &&
+    typeof receipt?.blockHash === "string" &&
+    transaction.blockHash.toLowerCase() !== receipt.blockHash.toLowerCase()
+  ) {
+    throw new Error("RPC 返回的交易和回执区块不一致");
+  }
+
   const decodedErc20Transfer = decodeErc20TransferData(transaction.input as WalletHex);
   const tokenMetadata =
     transactionTo && decodedErc20Transfer
@@ -931,9 +1062,7 @@ export async function fetchTransactionDetails(options: {
       ? formatGwei(transaction.maxPriorityFeePerGas)
       : null,
     actualNetworkFee,
-    explorerUrl: options.network.explorerUrl
-      ? `${options.network.explorerUrl.replace(/\/$/, "")}/tx/${transaction.hash}`
-      : null,
+    explorerUrl: buildTransactionExplorerUrl(options.network.explorerUrl, transaction.hash),
     summary: buildTransactionSummary({
       networkSymbol: options.network.symbol,
       transaction: {

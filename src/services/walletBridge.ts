@@ -8,6 +8,7 @@ import {
   type EncryptedSecretPayload,
   type PasswordVerifier,
 } from "../utils/security";
+import { assertPreviewSecretFlowAllowed } from "../utils/runtimeSafety";
 import type {
   DeleteWalletAccountRequest,
   FinalizePendingWalletRequest,
@@ -102,6 +103,7 @@ export async function createWallet(request: CreateWalletRequest) {
     return invoke<PendingWalletSession>("create_wallet", { request });
   }
 
+  assertPreviewSecretFlowAllowed();
   ensureNoPendingPreviewOnboarding();
   const mnemonic = generateMnemonic(english);
   const account = mnemonicToAccount(mnemonic);
@@ -153,6 +155,7 @@ export async function getPendingBackupPhrase(request: GetPendingBackupPhraseRequ
     return invoke<string>("get_pending_backup_phrase", { request });
   }
 
+  assertPreviewSecretFlowAllowed();
   if (!previewState.pending || previewState.pending.backupAccessToken !== request.backupAccessToken) {
     throw new Error("当前没有待确认的创建流程");
   }
@@ -218,6 +221,7 @@ export async function importWallet(request: ImportWalletRequest) {
     return invoke<WalletProfile>("import_wallet", { request });
   }
 
+  assertPreviewSecretFlowAllowed();
   ensureNoPendingPreviewOnboarding();
   const account =
     request.secretKind === "mnemonic"

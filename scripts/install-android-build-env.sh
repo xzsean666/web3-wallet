@@ -10,7 +10,15 @@ SHELL_RC_FILE=""
 INSTALL_PROJECT_INIT=0
 SKIP_APT=0
 SKIP_ENV_WRITE=0
-CMDLINE_TOOLS_URL="${ANDROID_CMDLINE_TOOLS_URL:-https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip}"
+DEFAULT_CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-14742923_latest.zip"
+CMDLINE_TOOLS_URL="${ANDROID_CMDLINE_TOOLS_URL:-$DEFAULT_CMDLINE_TOOLS_URL}"
+CMDLINE_TOOLS_SHA256="${ANDROID_CMDLINE_TOOLS_SHA256:-}"
+CMDLINE_TOOLS_REQUIRE_CHECKSUM="${ANDROID_CMDLINE_TOOLS_REQUIRE_CHECKSUM:-0}"
+DEFAULT_RUSTUP_INIT_URL="https://sh.rustup.rs"
+RUSTUP_INIT_URL="${RUSTUP_INIT_URL:-$DEFAULT_RUSTUP_INIT_URL}"
+RUSTUP_INIT_SHA256="${RUSTUP_INIT_SHA256:-}"
+RUSTUP_REQUIRE_CHECKSUM="${RUSTUP_REQUIRE_CHECKSUM:-0}"
+ALLOW_UNTRUSTED_DOWNLOAD_HOSTS="${ALLOW_UNTRUSTED_DOWNLOAD_HOSTS:-0}"
 ANDROID_PLATFORM_VERSION="${ANDROID_PLATFORM_VERSION:-}"
 ANDROID_BUILD_TOOLS_VERSION="${ANDROID_BUILD_TOOLS_VERSION:-}"
 ANDROID_NDK_VERSION_VALUE="${ANDROID_NDK_VERSION:-}"
@@ -45,9 +53,15 @@ Options:
 
 Environment overrides:
   ANDROID_CMDLINE_TOOLS_URL
+  ANDROID_CMDLINE_TOOLS_SHA256
+  ANDROID_CMDLINE_TOOLS_REQUIRE_CHECKSUM
   ANDROID_PLATFORM_VERSION
   ANDROID_BUILD_TOOLS_VERSION
   ANDROID_NDK_VERSION
+  RUSTUP_INIT_URL
+  RUSTUP_INIT_SHA256
+  RUSTUP_REQUIRE_CHECKSUM
+  ALLOW_UNTRUSTED_DOWNLOAD_HOSTS
 
 Examples:
   bash scripts/install-android-build-env.sh
@@ -84,6 +98,99 @@ run_cmd() {
 
 have_cmd() {
   command -v "$1" >/dev/null 2>&1
+}
+
+is_truthy() {
+  local value="${1:-}"
+  value="${value,,}"
+  case "$value" in
+    1|true|yes|on)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+normalize_sha256() {
+  local checksum="${1:-}"
+  checksum="${checksum#sha256:}"
+  checksum="$(printf '%s' "$checksum" | awk '{print $1}')"
+  printf '%s' "$checksum"
+}
+
+sha256_file() {
+  local file_path="$1"
+  if have_cmd sha256sum; then
+    sha256sum "$file_path" | awk '{print $1}'
+    return 0
+  fi
+  if have_cmd shasum; then
+    shasum -a 256 "$file_path" | awk '{print $1}'
+    return 0
+  fi
+  die "Neither sha256sum nor shasum is available for checksum verification"
+}
+
+verify_sha256_if_configured() {
+  local file_path="$1"
+  local expected_checksum="$2"
+  local require_checksum="$3"
+  local label="$4"
+  local actual_checksum
+
+  if [[ -n "$expected_checksum" ]]; then
+    expected_checksum="$(normalize_sha256 "$expected_checksum")"
+    [[ "$expected_checksum" =~ ^[0-9a-fA-F]{64}$ ]] || die "Invalid SHA256 format for $label"
+    actual_checksum="$(sha256_file "$file_path")"
+    if [[ "${actual_checksum,,}" != "${expected_checksum,,}" ]]; then
+      die "$label checksum mismatch. expected=$expected_checksum actual=$actual_checksum"
+    fi
+    log_ok "$label checksum verified"
+    return
+  fi
+
+  if is_truthy "$require_checksum"; then
+    die "$label checksum is required but not provided. Set checksum env variable before running"
+  fi
+
+  log_warn "$label checksum not configured; skipping verification"
+}
+
+extract_url_host() {
+  local url="$1"
+  printf '%s\n' "$url" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://([^/:?#]+).*#\1#'
+}
+
+validate_download_source() {
+  local url="$1"
+  local default_url="$2"
+  local expected_checksum="$3"
+  local label="$4"
+  shift 4
+  local allowed_hosts=("$@")
+  local host="$(
+    extract_url_host "$url"
+  )"
+  local allowed=1
+
+  [[ "$url" == https://* ]] || die "$label URL must use https://"
+
+  for allowed_host in "${allowed_hosts[@]}"; do
+    if [[ "$host" == "$allowed_host" ]]; then
+      allowed=0
+      break
+    fi
+  done
+
+  if [[ $allowed -ne 0 ]] && ! is_truthy "$ALLOW_UNTRUSTED_DOWNLOAD_HOSTS"; then
+    die "$label host is not in the trusted allowlist: $host"
+  fi
+
+  if [[ "$url" != "$default_url" && -z "$expected_checksum" ]]; then
+    die "$label URL was overridden; SHA256 must be provided together with the custom download URL"
+  fi
 }
 
 run_in_project() {
@@ -215,7 +322,13 @@ ensure_rustup() {
   log_section "Rust"
 
   if ! have_cmd rustup; then
-    run_cmd bash -lc 'curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y'
+    local rustup_tmp_dir rustup_installer
+    rustup_tmp_dir="$(mktemp -d)"
+    rustup_installer="$rustup_tmp_dir/rustup-init.sh"
+    run_cmd curl --proto '=https' --tlsv1.2 -fsSL "$RUSTUP_INIT_URL" -o "$rustup_installer"
+    verify_sha256_if_configured "$rustup_installer" "$RUSTUP_INIT_SHA256" "$RUSTUP_REQUIRE_CHECKSUM" "rustup-init"
+    run_cmd sh "$rustup_installer" -y
+    rm -rf "$rustup_tmp_dir"
     export PATH="$HOME/.cargo/bin:$PATH"
   fi
 
@@ -257,7 +370,8 @@ bootstrap_android_cmdline_tools() {
   tmp_dir="$(mktemp -d)"
   archive_path="$tmp_dir/commandlinetools.zip"
 
-  run_cmd curl -fL "$CMDLINE_TOOLS_URL" -o "$archive_path"
+  run_cmd curl -fsSL "$CMDLINE_TOOLS_URL" -o "$archive_path"
+  verify_sha256_if_configured "$archive_path" "$CMDLINE_TOOLS_SHA256" "$CMDLINE_TOOLS_REQUIRE_CHECKSUM" "android command-line tools"
   run_cmd unzip -q "$archive_path" -d "$tmp_dir/unpacked"
 
   if [[ -d "$sdk_root/cmdline-tools/latest" ]]; then
@@ -453,7 +567,7 @@ install_project_init() {
   log_section "Project Init"
 
   if [[ ! -d "$PROJECT_ROOT/node_modules" ]]; then
-    run_in_project "pnpm install"
+    run_in_project "pnpm install --frozen-lockfile"
   else
     log_ok "node_modules already present"
   fi
@@ -498,6 +612,20 @@ main() {
   log_info "android_sdk_root=$ANDROID_SDK_ROOT_VALUE"
   log_info "shell_rc=$SHELL_RC_FILE"
   log_info "init_project=$INSTALL_PROJECT_INIT"
+
+  validate_download_source \
+    "$CMDLINE_TOOLS_URL" \
+    "$DEFAULT_CMDLINE_TOOLS_URL" \
+    "$CMDLINE_TOOLS_SHA256" \
+    "android command-line tools" \
+    "dl.google.com"
+  validate_download_source \
+    "$RUSTUP_INIT_URL" \
+    "$DEFAULT_RUSTUP_INIT_URL" \
+    "$RUSTUP_INIT_SHA256" \
+    "rustup-init" \
+    "sh.rustup.rs" \
+    "static.rust-lang.org"
 
   install_apt_packages
   ensure_node_and_pnpm

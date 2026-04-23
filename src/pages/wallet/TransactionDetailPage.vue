@@ -12,6 +12,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { useWalletStore } from "../../stores/wallet";
 import type { TransactionDetails } from "../../types/portfolio";
 import { formatActivityStatus, formatDateTime, formatTokenAmount } from "../../utils/format";
+import { toSafeExternalUrl } from "../../utils/runtimeSafety";
 
 const route = useRoute();
 const networksStore = useNetworksStore();
@@ -39,7 +40,9 @@ const activityRecord = computed(
 const details = ref<TransactionDetails | null>(null);
 const isLoading = ref(false);
 const loadError = ref("");
+const externalLinkError = ref("");
 let pollTimer: number | null = null;
+const safeExplorerUrl = computed(() => toSafeExternalUrl(details.value?.explorerUrl ?? null));
 
 function isActivityForCurrentAccount(item: {
   id: string;
@@ -174,10 +177,18 @@ async function loadTransactionDetails() {
 
 async function openExternal(url: string | null) {
   if (!url) return;
+  const safeUrl = toSafeExternalUrl(url);
+
+  if (!safeUrl) {
+    externalLinkError.value = "已拦截不安全的外链地址";
+    return;
+  }
+
+  externalLinkError.value = "";
   if (isTauri()) {
-    await openUrl(url);
+    await openUrl(safeUrl);
   } else {
-    const openedWindow = window.open(url, "_blank", "noopener,noreferrer");
+    const openedWindow = window.open(safeUrl, "_blank", "noopener,noreferrer");
     if (openedWindow) {
       openedWindow.opener = null;
     }
@@ -356,14 +367,17 @@ onBeforeUnmount(stopPolling);
             立即刷新
           </button>
           <button
-            v-if="details.explorerUrl"
+            v-if="safeExplorerUrl"
             class="button button--secondary"
             type="button"
-            @click="openExternal(details.explorerUrl)"
+            @click="openExternal(safeExplorerUrl)"
           >
             打开区块浏览器
           </button>
         </div>
+        <p v-if="externalLinkError" class="helper-text helper-text--error">
+          {{ externalLinkError }}
+        </p>
       </SectionCard>
     </section>
   </WalletChrome>

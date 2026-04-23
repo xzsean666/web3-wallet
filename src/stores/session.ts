@@ -1,6 +1,10 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
-import { clearAllWalletScopedUiState, clearWalletScopedUiState } from "../services/uiState";
+import {
+  clearAllWalletScopedUiState,
+  clearWalletScopedUiState,
+  patchWalletScopedUiState,
+} from "../services/uiState";
 import {
   deleteWalletAccount as deleteWalletAccountBridge,
   isTauriWalletRuntime,
@@ -135,6 +139,12 @@ export const useSessionStore = defineStore("session", () => {
     lastUnlockError.value = "";
   }
 
+  function clearSendDraft(accountId: string | null | undefined) {
+    patchWalletScopedUiState(accountId, {
+      sendDraft: undefined,
+    });
+  }
+
   async function unlockWallet(password: string) {
     if (!activeAccountId.value) {
       lastUnlockError.value = "当前没有可解锁的账号";
@@ -169,6 +179,8 @@ export const useSessionStore = defineStore("session", () => {
     if (!hasWallet.value) {
       return;
     }
+
+    clearSendDraft(activeAccountId.value);
 
     isUnlocked.value = false;
     lastUnlockError.value = "";
@@ -208,6 +220,7 @@ export const useSessionStore = defineStore("session", () => {
     lastUnlockError.value = "";
 
     if (options.lock) {
+      clearSendDraft(accountId);
       isUnlocked.value = false;
     }
 
@@ -302,6 +315,10 @@ export const useSessionStore = defineStore("session", () => {
     applyWalletSession(snapshot, {
       unlocked: deletedActive ? false : isUnlocked.value,
     });
+
+    if (deletedActive) {
+      clearSendDraft(snapshot.activeAccountId ?? snapshot.accounts[0]?.accountId ?? null);
+    }
 
     return {
       ok: true,

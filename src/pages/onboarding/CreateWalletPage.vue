@@ -2,9 +2,13 @@
 import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
-import { createWallet } from "../../services/walletBridge";
+import { createWallet, isTauriWalletRuntime } from "../../services/walletBridge";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { useSessionStore } from "../../stores/session";
+import {
+  isPreviewSecretFlowAllowed,
+  PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE,
+} from "../../utils/runtimeSafety";
 
 const route = useRoute();
 const router = useRouter();
@@ -21,9 +25,17 @@ const enableBiometric = ref(true);
 const formError = ref("");
 const isSubmitting = ref(false);
 const backTarget = computed(() => (isAddAccountMode.value ? "/settings/accounts" : "/welcome"));
+const previewSecretFlowBlocked = computed(
+  () => !isTauriWalletRuntime() && !isPreviewSecretFlowAllowed(),
+);
 
 async function submitCreateWallet() {
   formError.value = "";
+
+  if (previewSecretFlowBlocked.value) {
+    formError.value = PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE;
+    return;
+  }
 
   if (onboardingStore.hasPendingDraft) {
     formError.value = "当前有一笔待完成的备份流程，请先完成或取消后再继续。";
@@ -98,6 +110,7 @@ async function submitCreateWallet() {
             <input
               v-model="walletLabel"
               autocomplete="off"
+              :disabled="previewSecretFlowBlocked"
               :placeholder="isAddAccountMode ? `Account ${sessionStore.accountCount + 1}` : 'Primary Wallet'"
             />
           </label>
@@ -107,6 +120,7 @@ async function submitCreateWallet() {
             <input
               v-model="password"
               autocomplete="new-password"
+              :disabled="previewSecretFlowBlocked"
               type="password"
               placeholder="至少 8 位"
             />
@@ -117,20 +131,28 @@ async function submitCreateWallet() {
             <input
               v-model="confirmPassword"
               autocomplete="new-password"
+              :disabled="previewSecretFlowBlocked"
               type="password"
               placeholder="再次输入密码"
             />
           </label>
 
           <label class="toggle-row">
-            <input v-model="enableBiometric" type="checkbox" />
+            <input v-model="enableBiometric" :disabled="previewSecretFlowBlocked" type="checkbox" />
             <span>默认开启生物识别解锁入口</span>
           </label>
 
           <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
+          <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
+            {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
+          </p>
 
           <div class="form-actions">
-            <button :disabled="isSubmitting" class="button button--primary" type="submit">
+            <button
+              :disabled="isSubmitting || previewSecretFlowBlocked"
+              class="button button--primary"
+              type="submit"
+            >
               {{ isSubmitting ? "正在生成助记词..." : isAddAccountMode ? "继续并创建新账号" : "继续并生成助记词" }}
             </button>
             <RouterLink class="button button--ghost" :to="backTarget">返回</RouterLink>

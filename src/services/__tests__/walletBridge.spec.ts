@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE,
+  PREVIEW_SECRET_FORCE_BLOCK_FLAG,
+  PREVIEW_SECRET_OVERRIDE_FLAG,
+} from "../../utils/runtimeSafety";
 
 const { invokeMock, isTauriMock } = vi.hoisted(() => ({
   invokeMock: vi.fn(),
@@ -21,6 +26,8 @@ describe("walletBridge", () => {
     invokeMock.mockReset();
     isTauriMock.mockReset();
     isTauriMock.mockReturnValue(false);
+    delete (globalThis as Record<string, unknown>)[PREVIEW_SECRET_FORCE_BLOCK_FLAG];
+    delete (globalThis as Record<string, unknown>)[PREVIEW_SECRET_OVERRIDE_FLAG];
   });
 
   it("creates a preview backup session that requires an access token to finalize", async () => {
@@ -347,23 +354,68 @@ describe("walletBridge", () => {
       ).rejects.toThrow("浏览器预览模式不支持真实签名与广播，请使用 pnpm tauri dev");
     });
 
-    it("falls back to timestamp/random fallback when crypto is missing", async () => {
+    it("refuses preview secret flows when secure randomness is missing", async () => {
       const walletBridge = await loadWalletBridge();
       const originalCrypto = globalThis.crypto;
       vi.stubGlobal("crypto", {
         subtle: originalCrypto?.subtle,
       } as Crypto);
       try {
-        const session = await walletBridge.createWallet({
-          walletLabel: "Fallback",
-          password: "super-secret",
-          isBiometricEnabled: false,
-        });
-
-        expect(session.backupAccessToken).toMatch(/^[0-9a-f]+(-[0-9a-f]+)?$/);
+        await expect(
+          walletBridge.createWallet({
+            walletLabel: "Fallback",
+            password: "super-secret",
+            isBiometricEnabled: false,
+          }),
+        ).rejects.toThrow("缺少安全随机数来源");
       } finally {
         vi.stubGlobal("crypto", originalCrypto);
       }
+    });
+
+    it("blocks preview wallet creation when the test-only force block flag is enabled", async () => {
+      const walletBridge = await loadWalletBridge();
+      (globalThis as Record<string, unknown>)[PREVIEW_SECRET_FORCE_BLOCK_FLAG] = true;
+
+      await expect(
+        walletBridge.createWallet({
+          walletLabel: "Blocked Create",
+          password: "super-secret",
+          isBiometricEnabled: false,
+        }),
+      ).rejects.toThrow(PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE);
+    });
+
+    it("blocks preview wallet import when the test-only force block flag is enabled", async () => {
+      const walletBridge = await loadWalletBridge();
+      (globalThis as Record<string, unknown>)[PREVIEW_SECRET_FORCE_BLOCK_FLAG] = true;
+
+      await expect(
+        walletBridge.importWallet({
+          walletLabel: "Blocked Import",
+          password: "super-secret",
+          isBiometricEnabled: false,
+          secretKind: "mnemonic",
+          secretValue: "test test test test test test test test test test test junk",
+        }),
+      ).rejects.toThrow(PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE);
+    });
+
+    it("blocks preview backup phrase reveal when the test-only force block flag is enabled", async () => {
+      const walletBridge = await loadWalletBridge();
+      const pending = await walletBridge.createWallet({
+        walletLabel: "Blocked Backup",
+        password: "super-secret",
+        isBiometricEnabled: false,
+      });
+      (globalThis as Record<string, unknown>)[PREVIEW_SECRET_FORCE_BLOCK_FLAG] = true;
+
+      await expect(
+        walletBridge.getPendingBackupPhrase({
+          backupAccessToken: pending.backupAccessToken,
+          password: "super-secret",
+        }),
+      ).rejects.toThrow(PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE);
     });
   });
 

@@ -6,9 +6,14 @@ import {
   cancelPendingWallet,
   finalizePendingWallet,
   getPendingBackupPhrase,
+  isTauriWalletRuntime,
 } from "../../services/walletBridge";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { useSessionStore } from "../../stores/session";
+import {
+  isPreviewSecretFlowAllowed,
+  PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE,
+} from "../../utils/runtimeSafety";
 
 const router = useRouter();
 const onboardingStore = useOnboardingStore();
@@ -19,6 +24,9 @@ const backupPassword = ref("");
 const words = ref<string[]>([]);
 const backTarget = computed(() => (sessionStore.hasWallet ? "/settings/accounts" : "/welcome"));
 const missingBackupTarget = computed(() => (sessionStore.hasWallet ? "/wallet" : "/welcome"));
+const previewSecretFlowBlocked = computed(
+  () => !isTauriWalletRuntime() && !isPreviewSecretFlowAllowed(),
+);
 
 async function ensureBackupAccess() {
   if (!onboardingStore.hasPendingBackup) {
@@ -55,6 +63,11 @@ onMounted(async () => {
 
 async function revealBackupPhrase() {
   formError.value = "";
+
+  if (previewSecretFlowBlocked.value) {
+    formError.value = PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE;
+    return;
+  }
 
   if (!onboardingStore.backupAccessToken) {
     formError.value = "当前备份会话已失效，请取消本次流程后重新创建钱包。";
@@ -154,26 +167,40 @@ async function cancelFlow() {
           <input
             v-model="backupPassword"
             autocomplete="current-password"
+            :disabled="previewSecretFlowBlocked"
             type="password"
             placeholder="输入创建这个钱包时设置的密码"
           />
         </label>
 
         <div class="form-actions">
-          <button class="button button--secondary" type="button" @click="revealBackupPhrase">
+          <button
+            class="button button--secondary"
+            type="button"
+            :disabled="previewSecretFlowBlocked"
+            @click="revealBackupPhrase"
+          >
             显示助记词
           </button>
         </div>
 
         <label class="toggle-row">
-          <input v-model="confirmed" type="checkbox" />
+          <input v-model="confirmed" :disabled="previewSecretFlowBlocked" type="checkbox" />
           <span>我已经离线备份这组助记词</span>
         </label>
 
         <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
+        <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
+          {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
+        </p>
 
         <div class="form-actions">
-          <button class="button button--primary" type="button" @click="finalizeBackup">
+          <button
+            class="button button--primary"
+            type="button"
+            :disabled="previewSecretFlowBlocked"
+            @click="finalizeBackup"
+          >
             完成备份并进入钱包
           </button>
           <button class="button button--ghost" type="button" @click="cancelFlow">

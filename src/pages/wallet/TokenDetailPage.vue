@@ -2,6 +2,8 @@
 import { computed, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { RouterLink, useRoute, useRouter } from "vue-router";
+import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import { fetchPortfolioSnapshot } from "../../services/evm";
@@ -17,6 +19,11 @@ import {
   formatTokenAmount,
   shortenAddress,
 } from "../../utils/format";
+import {
+  buildAddressExplorerUrl,
+  buildTokenExplorerUrl,
+  toSafeExternalUrl,
+} from "../../utils/runtimeSafety";
 
 const route = useRoute();
 const router = useRouter();
@@ -35,6 +42,7 @@ const snapshot = computed(() =>
 const removeTokenFeedback = ref("");
 const isRemovingCustomToken = ref(false);
 const isRemoveConfirming = ref(false);
+const externalLinkError = ref("");
 let tokenContextRefreshRequestId = 0;
 
 const isNativeToken = computed(() => tokenId.value === "native");
@@ -97,18 +105,10 @@ const relatedActivity = computed(() =>
   }),
 );
 const tokenExplorerUrl = computed(() => {
-  if (!asset.value?.contractAddress || !activeNetwork.value.explorerUrl) {
-    return null;
-  }
-
-  return `${activeNetwork.value.explorerUrl.replace(/\/$/, "")}/token/${asset.value.contractAddress}`;
+  return buildTokenExplorerUrl(activeNetwork.value.explorerUrl, asset.value?.contractAddress);
 });
 const addressExplorerUrl = computed(() => {
-  if (!primaryAddress.value || !activeNetwork.value.explorerUrl) {
-    return null;
-  }
-
-  return `${activeNetwork.value.explorerUrl.replace(/\/$/, "")}/address/${primaryAddress.value}`;
+  return buildAddressExplorerUrl(activeNetwork.value.explorerUrl, primaryAddress.value);
 });
 
 function isActivityForCurrentAccount(item: ActivityItem) {
@@ -240,6 +240,30 @@ async function removeTrackedToken() {
 
   await router.replace("/wallet");
 }
+
+async function openExternal(url: string | null) {
+  if (!url) {
+    return;
+  }
+
+  const safeUrl = toSafeExternalUrl(url);
+
+  if (!safeUrl) {
+    externalLinkError.value = "已拦截不安全的外链地址";
+    return;
+  }
+
+  externalLinkError.value = "";
+  if (isTauri()) {
+    await openUrl(safeUrl);
+    return;
+  }
+
+  const openedWindow = window.open(safeUrl, "_blank", "noopener,noreferrer");
+  if (openedWindow) {
+    openedWindow.opener = null;
+  }
+}
 </script>
 
 <template>
@@ -340,16 +364,18 @@ async function removeTrackedToken() {
             </div>
           </div>
           <div class="form-actions">
-            <a
+            <button
               v-if="tokenExplorerUrl"
               class="button button--secondary"
-              :href="tokenExplorerUrl"
-              rel="noreferrer"
-              target="_blank"
+              type="button"
+              @click="openExternal(tokenExplorerUrl)"
             >
               查看合约
-            </a>
+            </button>
           </div>
+          <p v-if="externalLinkError" class="helper-text helper-text--error">
+            {{ externalLinkError }}
+          </p>
         </template>
         <template v-else>
           <div class="key-value-list">
@@ -367,16 +393,18 @@ async function removeTrackedToken() {
             </div>
           </div>
           <div class="form-actions">
-            <a
+            <button
               v-if="addressExplorerUrl"
               class="button button--secondary"
-              :href="addressExplorerUrl"
-              rel="noreferrer"
-              target="_blank"
+              type="button"
+              @click="openExternal(addressExplorerUrl)"
             >
               查看地址
-            </a>
+            </button>
           </div>
+          <p v-if="externalLinkError" class="helper-text helper-text--error">
+            {{ externalLinkError }}
+          </p>
         </template>
       </SectionCard>
     </section>

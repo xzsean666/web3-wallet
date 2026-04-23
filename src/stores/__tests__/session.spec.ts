@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPinia, setActivePinia } from "pinia";
+import {
+  clearPersistedUiState,
+  loadWalletScopedUiState,
+  patchWalletScopedUiState,
+} from "../../services/uiState";
 import { useSessionStore } from "../session";
 
 const {
@@ -31,6 +36,8 @@ vi.mock("../../services/walletBridge", () => ({
 describe("session store", () => {
   beforeEach(() => {
     setActivePinia(createPinia());
+    clearPersistedUiState();
+    window.localStorage.clear();
     deleteWalletAccountMock.mockReset();
     loadWalletSessionMock.mockReset();
     renameWalletAccountMock.mockReset();
@@ -141,6 +148,71 @@ describe("session store", () => {
     expect(store.activeAccountId).toBe("account-2");
     expect(store.walletLabel).toBe("Imported Ops");
     expect(store.isUnlocked).toBe(false);
+  });
+
+  it("clears the next account send draft when switching with lock enabled", async () => {
+    const store = useSessionStore();
+    const now = new Date().toISOString();
+
+    store.applyWalletSession(
+      {
+        activeAccountId: "account-1",
+        accounts: [
+          {
+            accountId: "account-1",
+            derivationGroupId: "account-1",
+            derivationIndex: 0,
+            walletLabel: "Primary Wallet",
+            address: "0x1111111111111111111111111111111111111111" as const,
+            isBiometricEnabled: true,
+            source: "created" as const,
+            secretKind: "mnemonic" as const,
+            hasBackedUpMnemonic: true,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+          {
+            accountId: "account-2",
+            derivationGroupId: "account-2",
+            derivationIndex: 0,
+            walletLabel: "Imported Ops",
+            address: "0x2222222222222222222222222222222222222222" as const,
+            isBiometricEnabled: false,
+            source: "imported" as const,
+            secretKind: "privateKey" as const,
+            hasBackedUpMnemonic: false,
+            createdAt: now,
+            lastUnlockedAt: null,
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+    patchWalletScopedUiState("account-2", {
+      sendDraft: {
+        networkId: "ethereum",
+        assetId: "native",
+        recipientAddress: "0x3333333333333333333333333333333333333333",
+        amount: "1.25",
+      },
+    });
+
+    setActiveWalletMock.mockResolvedValueOnce({
+      accountId: "account-2",
+      derivationGroupId: "account-2",
+      derivationIndex: 0,
+      walletLabel: "Imported Ops",
+      address: "0x2222222222222222222222222222222222222222" as const,
+      isBiometricEnabled: false,
+      source: "imported" as const,
+      secretKind: "privateKey" as const,
+      hasBackedUpMnemonic: false,
+      createdAt: now,
+      lastUnlockedAt: null,
+    });
+
+    expect(await store.selectWalletAccount("account-2", { lock: true })).toBe(true);
+    expect(loadWalletScopedUiState("account-2").sendDraft).toBeUndefined();
   });
 
   it("unlocks the currently active wallet account", async () => {
@@ -368,5 +440,80 @@ describe("session store", () => {
     expect(store.activeAccountId).toBe("account-2");
     expect(store.isUnlocked).toBe(false);
     expect(store.walletLabel).toBe("Imported Ops");
+  });
+
+  it("clears the fallback account send draft after deleting the active account", async () => {
+    const store = useSessionStore();
+    const now = new Date().toISOString();
+
+    store.applyWalletSession(
+      {
+        activeAccountId: "account-1",
+        accounts: [
+          {
+            accountId: "account-1",
+            derivationGroupId: "account-1",
+            derivationIndex: 0,
+            walletLabel: "Primary Wallet",
+            address: "0x1111111111111111111111111111111111111111" as const,
+            isBiometricEnabled: true,
+            source: "created" as const,
+            secretKind: "mnemonic" as const,
+            hasBackedUpMnemonic: true,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+          {
+            accountId: "account-2",
+            derivationGroupId: "account-2",
+            derivationIndex: 0,
+            walletLabel: "Imported Ops",
+            address: "0x2222222222222222222222222222222222222222" as const,
+            isBiometricEnabled: false,
+            source: "imported" as const,
+            secretKind: "privateKey" as const,
+            hasBackedUpMnemonic: false,
+            createdAt: now,
+            lastUnlockedAt: now,
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+    patchWalletScopedUiState("account-2", {
+      sendDraft: {
+        networkId: "ethereum",
+        assetId: "native",
+        recipientAddress: "0x3333333333333333333333333333333333333333",
+        amount: "4.2",
+      },
+    });
+
+    deleteWalletAccountMock.mockResolvedValueOnce({
+      activeAccountId: "account-2",
+      accounts: [
+        {
+          accountId: "account-2",
+          derivationGroupId: "account-2",
+          derivationIndex: 0,
+          walletLabel: "Imported Ops",
+          address: "0x2222222222222222222222222222222222222222" as const,
+          isBiometricEnabled: false,
+          source: "imported" as const,
+          secretKind: "privateKey" as const,
+          hasBackedUpMnemonic: false,
+          createdAt: now,
+          lastUnlockedAt: now,
+        },
+      ],
+    });
+
+    expect(await store.deleteWalletAccount("account-1", "wallet-secret")).toEqual({
+      ok: true,
+      removedAll: false,
+      requiresUnlock: true,
+      errorMessage: "",
+    });
+    expect(loadWalletScopedUiState("account-2").sendDraft).toBeUndefined();
   });
 });

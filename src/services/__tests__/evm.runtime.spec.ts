@@ -113,6 +113,38 @@ describe("evm runtime flows", () => {
     ).rejects.toThrow("当前合约没有返回可用的 ERC20 元数据");
   });
 
+  it("sanitizes token metadata before returning it to the UI", async () => {
+    const client = createClientMock();
+    client.readContract.mockImplementation(({ functionName }) => {
+      if (functionName === "symbol") {
+        return Promise.resolve("U\u202eS\u200BDC");
+      }
+
+      if (functionName === "name") {
+        return Promise.resolve("USD\u0000 Coin\u200F");
+      }
+
+      if (functionName === "decimals") {
+        return Promise.resolve(6);
+      }
+
+      return Promise.resolve(null);
+    });
+    createPublicClientMock.mockReturnValue(client);
+    const evm = await loadEvm();
+
+    await expect(
+      evm.readErc20TokenMetadata({
+        network,
+        contractAddress,
+      }),
+    ).resolves.toEqual({
+      symbol: "USDC",
+      name: "USD Coin",
+      decimals: 6,
+    });
+  });
+
   it("builds a portfolio snapshot and marks failed token calls as unavailable", async () => {
     const client = createClientMock();
     client.getBlockNumber.mockResolvedValue(123n);
@@ -265,6 +297,36 @@ describe("evm runtime flows", () => {
         },
       }),
     ).rejects.toThrow("当前 RPC 无法返回可用的 Gas 费用参数");
+  });
+
+  it("rejects clearly abnormal fee quotes returned by the rpc", async () => {
+    const client = createClientMock();
+    client.getTransactionCount.mockResolvedValue(1);
+    client.estimateFeesPerGas.mockImplementation((options?: { type?: string }) => {
+      if (options?.type === "legacy") {
+        return Promise.resolve({ gasPrice: 8_000_000_000_000n });
+      }
+
+      return Promise.resolve({
+        maxFeePerGas: 8_000_000_000_000n,
+        maxPriorityFeePerGas: 2_000_000_000n,
+      });
+    });
+    client.estimateGas.mockResolvedValue(21_000n);
+    createPublicClientMock.mockReturnValue(client);
+    const evm = await loadEvm();
+
+    await expect(
+      evm.estimateTransferPreview({
+        network,
+        account,
+        recipientAddress: recipient,
+        amount: "1",
+        asset: {
+          type: "native",
+        },
+      }),
+    ).rejects.toThrow("当前 RPC 返回的 Max Fee 异常偏高，已拒绝使用这组估算参数");
   });
 
   it("broadcasts a signed transaction through the mocked client", async () => {
@@ -471,5 +533,37 @@ describe("evm runtime flows", () => {
         txHash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       }),
     ).rejects.toThrow("rpc offline");
+  });
+
+  it("rejects mismatched receipt hashes returned by the rpc", async () => {
+    const client = createClientMock();
+    client.getTransaction.mockResolvedValue({
+      hash: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      from: account,
+      to: recipient,
+      nonce: 2,
+      value: parseUnits("0.1", 18),
+      blockNumber: 9n,
+      gas: 21_000n,
+      gasPrice: 15_000_000_000n,
+      input: "0x",
+      maxFeePerGas: null,
+      maxPriorityFeePerGas: null,
+    });
+    client.getTransactionReceipt.mockResolvedValue({
+      transactionHash: "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      status: "success",
+      gasUsed: 21_000n,
+      effectiveGasPrice: 15_000_000_000n,
+    });
+    createPublicClientMock.mockReturnValue(client);
+    const evm = await loadEvm();
+
+    await expect(
+      evm.fetchTransactionDetails({
+        network,
+        txHash: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      }),
+    ).rejects.toThrow("RPC 返回的交易回执和请求哈希不一致");
   });
 });

@@ -292,7 +292,7 @@ describe("SendPage", () => {
     });
     signTransferTransactionMock.mockResolvedValue({
       rawTransaction: "0xdeadbeef",
-      txHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      txHash: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     });
     broadcastSignedTransactionMock.mockResolvedValue(
       "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
@@ -396,7 +396,7 @@ describe("SendPage", () => {
     });
     signTransferTransactionMock.mockResolvedValue({
       rawTransaction: "0xfeedface",
-      txHash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      txHash: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     });
     broadcastSignedTransactionMock.mockResolvedValue(
       "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",

@@ -49,7 +49,7 @@ const validationStatusLabel = computed(() => {
   }
 
   if (validation.value.status === "ok") {
-    return "Ready";
+    return "Reachable";
   }
 
   if (validation.value.status === "mismatch") {
@@ -185,7 +185,7 @@ function removeNetwork(id: string) {
   <WalletChrome
     eyebrow="Networks"
     title="自定义网络已经进入可校验、可切换、可维护的 MVP 形态。"
-    subtitle="保存前会真实校验 RPC 可访问性、Chain ID 和最新区块，避免把错误节点直接写进钱包。"
+    subtitle="保存前会校验 RPC 可访问性、Chain ID 和最新区块，但这只是连通性检查，自定义 RPC 仍然可能返回不可信链上数据。"
   >
     <section class="status-grid">
       <SectionCard title="Active" description="当前生效网络" tone="accent">
@@ -290,7 +290,7 @@ function removeNetwork(id: string) {
     <section class="page-grid page-grid--2">
       <SectionCard
         :title="editingId ? 'Edit Custom Network' : 'Add Custom Network'"
-        description="只接受 EVM 网络参数，保存前必须通过 RPC 校验"
+        description="只接受 EVM 网络参数，保存前必须通过 RPC 连通性校验"
       >
         <form class="form-grid" @submit.prevent="submitNetwork">
           <label class="field">
@@ -375,6 +375,7 @@ function removeNetwork(id: string) {
           <li>Chain ID 不能和现有网络重复</li>
           <li>RPC URL 必须是 HTTP 或 HTTPS</li>
           <li>保存前会校验 Chain ID 与最新区块</li>
+          <li>自定义 RPC 即使校验通过，也不代表节点可信或返回结果未被篡改</li>
         </ul>
       </SectionCard>
     </section>

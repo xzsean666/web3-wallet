@@ -4,6 +4,8 @@ import { isAddress, getAddress } from "viem";
 import { loadWalletScopedUiState, patchWalletScopedUiState } from "../services/uiState";
 import { useSessionStore } from "./session";
 import { formatTokenAmount, shortenAddress } from "../utils/format";
+import { getRestrictedAddressReason } from "../utils/runtimeSafety";
+import { normalizeTokenName, normalizeTokenSymbol } from "../utils/tokenSafety";
 import type {
   ActivityItem,
   AddressBookDraft,
@@ -130,6 +132,7 @@ function isPersistedTrackedToken(value: unknown): value is TrackedToken {
     token.decimals >= 0 &&
     token.decimals <= 36 &&
     typeof token.contractAddress === "string" &&
+    isAddress(token.contractAddress) &&
     Array.isArray(token.networkIds) &&
     token.networkIds.every((entry) => typeof entry === "string")
   );
@@ -142,11 +145,27 @@ function hydrateCustomTrackedTokens(value: unknown) {
 
   return value
     .filter(isPersistedTrackedToken)
-    .map((token) => ({
-      ...token,
-      source: "custom" as const,
-    }))
-    .filter((token) => !matchesPresetTrackedToken(token));
+    .reduce<TrackedToken[]>((tokens, token) => {
+      const normalizedSymbol = normalizeTokenSymbol(token.symbol)?.toUpperCase();
+      const normalizedName = normalizeTokenName(token.name, normalizedSymbol);
+
+      if (!normalizedSymbol || !normalizedName) {
+        return tokens;
+      }
+
+      const normalizedToken: TrackedToken = {
+        ...token,
+        symbol: normalizedSymbol,
+        name: normalizedName,
+        source: "custom" as const,
+      };
+
+      if (!matchesPresetTrackedToken(normalizedToken)) {
+        tokens.push(normalizedToken);
+      }
+
+      return tokens;
+    }, []);
 }
 
 function isPersistedActivityItem(value: unknown): value is ActivityItem {
@@ -191,6 +210,8 @@ function isPersistedAddressBookEntry(value: unknown): value is AddressBookEntry 
   }
 
   const entry = value as Record<string, unknown>;
+  const restrictedAddressReason =
+    typeof entry.address === "string" ? getRestrictedAddressReason(entry.address) : null;
 
   return (
     typeof entry.id === "string" &&
@@ -198,6 +219,7 @@ function isPersistedAddressBookEntry(value: unknown): value is AddressBookEntry 
     typeof entry.label === "string" &&
     typeof entry.address === "string" &&
     isAddress(entry.address) &&
+    restrictedAddressReason === null &&
     typeof entry.note === "string" &&
     typeof entry.createdAt === "string" &&
     typeof entry.updatedAt === "string" &&
@@ -359,13 +381,15 @@ export const useWalletStore = defineStore("wallet", () => {
     const errors: string[] = [];
     let normalizedAddress = draft.contractAddress.trim();
     const decimalsValue = Number(draft.decimals.trim());
+    const normalizedName = normalizeTokenName(draft.name);
+    const normalizedSymbol = normalizeTokenSymbol(draft.symbol)?.toUpperCase() ?? "";
 
-    if (!draft.name.trim()) {
-      errors.push("Token 名称不能为空");
+    if (!normalizedName) {
+      errors.push("Token 名称不能为空，且不能只包含控制字符");
     }
 
-    if (!draft.symbol.trim() || draft.symbol.trim().length > 10) {
-      errors.push("Token Symbol 不能为空，且长度不能超过 10 个字符");
+    if (!normalizedSymbol || normalizedSymbol.length > 10) {
+      errors.push("Token Symbol 不能为空，且去除控制字符后长度不能超过 10 个字符");
     }
 
     try {
@@ -392,6 +416,8 @@ export const useWalletStore = defineStore("wallet", () => {
       errors,
       normalizedAddress,
       decimalsValue,
+      normalizedName,
+      normalizedSymbol,
     };
   }
 
@@ -413,6 +439,14 @@ export const useWalletStore = defineStore("wallet", () => {
       errors.push("联系人地址必须是合法的 EVM 地址");
     }
 
+    const restrictedAddressReason = isAddress(normalizedAddress)
+      ? getRestrictedAddressReason(normalizedAddress)
+      : null;
+
+    if (restrictedAddressReason) {
+      errors.push(restrictedAddressReason);
+    }
+
     if (normalizedNote.length > 120) {
       errors.push("备注不能超过 120 个字符");
     }
@@ -426,7 +460,13 @@ export const useWalletStore = defineStore("wallet", () => {
   }
 
   function addCustomToken(draft: TokenDraft) {
-    const { errors, normalizedAddress, decimalsValue } = validateTokenDraft(draft);
+    const {
+      errors,
+      normalizedAddress,
+      decimalsValue,
+      normalizedName,
+      normalizedSymbol,
+    } = validateTokenDraft(draft);
 
     if (errors.length > 0) {
       return {
@@ -437,8 +477,8 @@ export const useWalletStore = defineStore("wallet", () => {
 
     const token: TrackedToken = {
       id: `custom-${draft.networkId}-${normalizedAddress.toLowerCase()}`,
-      symbol: draft.symbol.trim().toUpperCase(),
-      name: draft.name.trim(),
+      symbol: normalizedSymbol,
+      name: normalizedName!,
       balance: "0.00",
       decimals: decimalsValue,
       contractAddress: normalizedAddress as `0x${string}`,

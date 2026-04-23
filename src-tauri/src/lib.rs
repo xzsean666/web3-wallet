@@ -37,6 +37,7 @@ pub fn run() {
 
             app.handle()
                 .plugin(tauri_plugin_stronghold::Builder::with_argon2(&salt_path).build())?;
+            app.handle().plugin(tauri_plugin_opener::init())?;
 
             Ok(())
         })

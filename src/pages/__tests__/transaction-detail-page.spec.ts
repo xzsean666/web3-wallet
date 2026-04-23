@@ -151,4 +151,74 @@ describe("TransactionDetailPage", () => {
 
     wrapper.unmount();
   });
+
+  it("hides the explorer button when the returned explorer url is unsafe", async () => {
+    const sessionStore = useSessionStore();
+
+    sessionStore.applyWalletSession(
+      {
+        activeAccountId: "account-1",
+        accounts: [
+          {
+            accountId: "account-1",
+            derivationGroupId: "account-1",
+            derivationIndex: 0,
+            walletLabel: "Primary Wallet",
+            address: "0x1111111111111111111111111111111111111111",
+            source: "created",
+            secretKind: "mnemonic",
+            isBiometricEnabled: true,
+            hasBackedUpMnemonic: true,
+            createdAt: "2026-04-07T00:00:00.000Z",
+            lastUnlockedAt: "2026-04-07T00:00:00.000Z",
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+
+    fetchTransactionDetailsMock.mockResolvedValue({
+      hash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      from: "0x1111111111111111111111111111111111111111",
+      to: "0x2222222222222222222222222222222222222222",
+      nonce: "3",
+      value: "1",
+      blockNumber: "500",
+      confirmedAt: "2026-04-07T00:05:00.000Z",
+      status: "success",
+      gasLimit: "21000",
+      gasUsed: "21000",
+      gasPriceGwei: "1",
+      effectiveGasPriceGwei: "1",
+      maxFeePerGasGwei: null,
+      maxPriorityFeePerGasGwei: null,
+      actualNetworkFee: "0.000021",
+      explorerUrl: "javascript:alert(1)",
+      summary: {
+        kind: "native-transfer",
+        label: "Native transfer",
+        method: null,
+        amount: "1",
+        symbol: "ETH",
+        assetName: "Ether",
+        recipientAddress: "0x2222222222222222222222222222222222222222",
+        contractAddress: null,
+      },
+    });
+
+    const wrapper = mount(TransactionDetailPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.findAll("button").map((button) => button.text())).not.toContain("打开区块浏览器");
+
+    wrapper.unmount();
+  });
 });

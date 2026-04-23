@@ -55,6 +55,29 @@ describe("wallet store", () => {
     expect(store.trackedTokens.some((token) => token.symbol === "CD")).toBe(true);
   });
 
+  it("sanitizes custom token labels before storing them", () => {
+    bootstrapSession();
+    const store = useWalletStore();
+
+    const result = store.addCustomToken({
+      networkId: "ethereum",
+      name: "Mock\u0000 Dollar\u200F",
+      symbol: "m\u202eusd",
+      decimals: "18",
+      contractAddress: "0x1111111111111111111111111111111111111111",
+    });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) {
+      throw new Error("expected custom token to be added");
+    }
+
+    expect(result.token).toMatchObject({
+      symbol: "MUSD",
+      name: "Mock Dollar",
+    });
+  });
+
   it("rejects invalid token drafts", () => {
     bootstrapSession();
     const store = useWalletStore();
@@ -220,6 +243,33 @@ describe("wallet store", () => {
       id: "usdt-base",
       source: "preset",
     });
+  });
+
+  it("drops persisted custom tokens whose labels only contain control characters", async () => {
+    bootstrapSession();
+    patchWalletScopedUiState("account-1", {
+      customTokens: [
+        {
+          id: "custom-corrupted",
+          symbol: "\u200F\u202E",
+          name: "\u0000\u0001",
+          balance: "0.00",
+          decimals: 18,
+          contractAddress: "0x1111111111111111111111111111111111111111",
+          networkIds: ["ethereum"],
+          source: "custom",
+        },
+      ],
+    });
+    await nextTick();
+
+    setActivePinia(createPinia());
+    bootstrapSession();
+    const rehydratedStore = useWalletStore();
+
+    expect(
+      rehydratedStore.trackedTokens.some((token) => token.id === "custom-corrupted"),
+    ).toBe(false);
   });
 
   it("upserts, marks, and removes address book entries", () => {
