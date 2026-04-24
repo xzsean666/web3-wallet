@@ -43,12 +43,15 @@ const { activeNetwork } = storeToRefs(networksStore);
         </div>
         <div class="wallet-meta">
           <RouterLink
-            class="meta-pill"
+            :class="['meta-pill', activeNetwork.environment === 'testnet' ? 'meta-pill--testnet' : '']"
             to="/settings/networks"
             :aria-label="`网络：${activeNetwork.name}`"
           >
             {{ activeNetwork.name }}
           </RouterLink>
+          <span v-if="activeNetwork.environment === 'testnet'" class="meta-pill meta-pill--testnet">
+            测试网
+          </span>
         </div>
       </div>
 

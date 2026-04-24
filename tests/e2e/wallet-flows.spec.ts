@@ -2,12 +2,17 @@ import { expect, test } from "@playwright/test";
 import {
   TEST_MNEMONIC,
   WALLET_PASSWORD,
+  allowUnsafePreviewSecretFlow,
   createFreshWallet,
   mockJsonRpc,
   setupDefaultEthereumRpcMock,
 } from "./helpers";
 
 test.describe("Playwright wallet flows", () => {
+  test.beforeEach(async ({ page }) => {
+    await allowUnsafePreviewSecretFlow(page);
+  });
+
   test("imports a wallet from mnemonic in browser preview", async ({ page }) => {
     await setupDefaultEthereumRpcMock(page);
     await page.goto("/");
@@ -62,6 +67,24 @@ test.describe("Playwright wallet flows", () => {
     await page.getByRole("button", { name: "解锁钱包" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
     await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
+  });
+
+  test("adds an imported account from the locked wallet page", async ({ page }) => {
+    await createFreshWallet(page, "Locked Add Wallet");
+    await page.getByRole("button", { name: "锁定" }).click();
+    await expect(page).toHaveURL(/\/unlock$/);
+
+    await page.getByRole("link", { name: "导入账号" }).click();
+    await expect(page).toHaveURL(/\/settings\/accounts\/import$/);
+    await page.getByLabel("账号名称").fill("Locked Imported Account");
+    await page.getByLabel(/助记词/).fill(TEST_MNEMONIC);
+    await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
+    await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
+    await page.getByRole("button", { name: "导入并切换账号" }).click();
+
+    await expect(page).toHaveURL(/\/wallet$/);
+    await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
+    await expect(page.locator(".wallet-chrome__account")).toHaveText("Locked Imported Account");
   });
 
   test("opens the native token detail page without a missing-token warning", async ({ page }) => {

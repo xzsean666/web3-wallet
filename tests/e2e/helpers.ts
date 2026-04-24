@@ -6,6 +6,7 @@ export const TEST_MNEMONIC =
   "legal winner thank year wave sausage worth useful legal winner thank yellow";
 
 const DEFAULT_ETHEREUM_RPC_URL = "https://ethereum-rpc.publicnode.com";
+const PREVIEW_SECRET_OVERRIDE_FLAG = "__WEB3_WALLET_UNSAFE_PREVIEW_SECRETS__";
 const ERC20_NAME_SELECTOR = "0x06fdde03";
 const ERC20_SYMBOL_SELECTOR = "0x95d89b41";
 const ERC20_DECIMALS_SELECTOR = "0x313ce567";
@@ -155,11 +156,18 @@ export async function setupDefaultEthereumRpcMock(
   });
 }
 
+export async function allowUnsafePreviewSecretFlow(page: Page) {
+  await page.addInitScript((flag: string) => {
+    (globalThis as Record<string, unknown>)[flag] = true;
+  }, PREVIEW_SECRET_OVERRIDE_FLAG);
+}
+
 export async function createFreshWallet(
   page: Page,
   walletLabel = "Preview Wallet",
   rpcOptions?: EthereumRpcMockOptions,
 ) {
+  await allowUnsafePreviewSecretFlow(page);
   await setupDefaultEthereumRpcMock(page, rpcOptions);
   await page.goto("/");
   await page.getByRole("link", { name: "创建钱包" }).click();

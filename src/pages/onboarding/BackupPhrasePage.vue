@@ -22,8 +22,20 @@ const confirmed = ref(false);
 const formError = ref("");
 const backupPassword = ref("");
 const words = ref<string[]>([]);
-const backTarget = computed(() => (sessionStore.hasWallet ? "/settings/accounts" : "/welcome"));
-const missingBackupTarget = computed(() => (sessionStore.hasWallet ? "/wallet" : "/welcome"));
+const backTarget = computed(() => {
+  if (!sessionStore.hasWallet) {
+    return "/welcome";
+  }
+
+  return sessionStore.isUnlocked ? "/settings/accounts" : "/unlock";
+});
+const missingBackupTarget = computed(() => {
+  if (!sessionStore.hasWallet) {
+    return "/welcome";
+  }
+
+  return sessionStore.isUnlocked ? "/wallet" : "/unlock";
+});
 const previewSecretFlowBlocked = computed(
   () => !isTauriWalletRuntime() && !isPreviewSecretFlowAllowed(),
 );
@@ -32,12 +44,6 @@ async function ensureBackupAccess() {
   if (!onboardingStore.hasPendingBackup) {
     words.value = [];
     await router.replace(missingBackupTarget.value);
-    return false;
-  }
-
-  if (sessionStore.hasWallet && !sessionStore.isUnlocked) {
-    words.value = [];
-    await router.replace("/unlock");
     return false;
   }
 
@@ -115,9 +121,8 @@ async function finalizeBackup() {
       backupAccessToken: onboardingStore.backupAccessToken,
       confirmedBackup: confirmed.value,
     });
-    const shouldRemainUnlocked = sessionStore.hasWallet ? sessionStore.isUnlocked : true;
     onboardingStore.clearDraft();
-    sessionStore.applyWalletProfile(profile, { unlocked: shouldRemainUnlocked });
+    sessionStore.applyWalletProfile(profile, { unlocked: true });
     await router.replace("/wallet");
   } catch (error) {
     formError.value =

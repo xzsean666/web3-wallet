@@ -37,12 +37,16 @@ describe("uiState", () => {
         {
           id: "custom-1",
           source: "custom",
+          environment: "mainnet",
           name: "Custom",
           chainId: 10,
           rpcUrl: "https://rpc.example.org",
           symbol: "ETH",
         },
       ],
+      networkRpcOverrides: {
+        polygon: "https://polygon.publicnode.com/",
+      },
     });
 
     uiState.patchWalletScopedUiState("account-1", {
@@ -65,6 +69,9 @@ describe("uiState", () => {
     expect(uiState.loadPersistedUiState()).toMatchObject({
       activeNetworkId: "ethereum",
       customNetworks: [{ id: "custom-1" }],
+      networkRpcOverrides: {
+        polygon: "https://polygon.publicnode.com/",
+      },
     });
     expect(uiState.loadWalletScopedUiState("account-1")).toMatchObject({
       recentActivity: [{ id: "activity-1" }],

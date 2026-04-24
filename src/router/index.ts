@@ -98,13 +98,13 @@ export const router = createRouter({
       path: "/settings/accounts/create",
       name: "account-create",
       component: () => import("../pages/onboarding/CreateWalletPage.vue"),
-      meta: { requiresUnlocked: true, blocksWhenPendingDraft: true },
+      meta: { requiresWallet: true, blocksWhenPendingDraft: true },
     },
     {
       path: "/settings/accounts/import",
       name: "account-import",
       component: () => import("../pages/onboarding/ImportWalletPage.vue"),
-      meta: { requiresUnlocked: true, blocksWhenPendingDraft: true },
+      meta: { requiresWallet: true, blocksWhenPendingDraft: true },
     },
     {
       path: "/settings/address-book",
@@ -127,10 +127,6 @@ router.beforeEach((to) => {
 
   if (to.meta.requiresPendingBackup && !onboardingStore.hasPendingBackup) {
     return sessionStore.hasWallet ? "/wallet" : "/welcome";
-  }
-
-  if (to.meta.requiresPendingBackup && sessionStore.hasWallet && !sessionStore.isUnlocked) {
-    return "/unlock";
   }
 
   if (to.meta.requiresUnlocked) {

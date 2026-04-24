@@ -107,6 +107,15 @@ describe("wallet store", () => {
     expect(store.tokensForNetwork("optimism").map((token) => token.id)).toEqual(
       expect.arrayContaining(["usdc-optimism", "usdt-optimism"]),
     );
+    expect(store.tokensForNetwork("arbitrum").map((token) => token.id)).toEqual(
+      expect.arrayContaining(["usdc-arbitrum", "usdt-arbitrum"]),
+    );
+    expect(store.tokensForNetwork("bsc").map((token) => token.id)).toEqual(
+      expect.arrayContaining(["usdc-bsc", "usdt-bsc"]),
+    );
+    expect(store.tokensForNetwork("polygon").map((token) => token.id)).toEqual(
+      expect.arrayContaining(["usdc-polygon", "usdt0-polygon"]),
+    );
 
     const presetRemoval = store.removeCustomToken("usdt-base");
     expect(presetRemoval.ok).toBe(false);

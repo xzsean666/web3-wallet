@@ -27,7 +27,13 @@ const confirmPassword = ref("");
 const enableBiometric = ref(true);
 const formError = ref("");
 const isSubmitting = ref(false);
-const backTarget = computed(() => (isAddAccountMode.value ? "/settings/accounts" : "/welcome"));
+const backTarget = computed(() => {
+  if (!isAddAccountMode.value) {
+    return "/welcome";
+  }
+
+  return sessionStore.isUnlocked ? "/settings/accounts" : "/unlock";
+});
 const previewSecretFlowBlocked = computed(
   () => !isTauriWalletRuntime() && !isPreviewSecretFlowAllowed(),
 );
@@ -78,9 +84,7 @@ async function submitImport() {
     });
 
     onboardingStore.clearDraft();
-    sessionStore.applyWalletProfile(profile, {
-      unlocked: sessionStore.hasWallet ? sessionStore.isUnlocked : true,
-    });
+    sessionStore.applyWalletProfile(profile, { unlocked: true });
     secretValue.value = "";
     password.value = "";
     confirmPassword.value = "";

@@ -53,6 +53,16 @@ describe("router guards", () => {
     expect(router.currentRoute.value.fullPath).toBe("/unlock");
   });
 
+  it("allows locked wallet sessions to open independent account add flows", async () => {
+    applyWalletSession(false);
+
+    await router.push("/settings/accounts/create");
+    expect(router.currentRoute.value.fullPath).toBe("/settings/accounts/create");
+
+    await router.push("/settings/accounts/import");
+    expect(router.currentRoute.value.fullPath).toBe("/settings/accounts/import");
+  });
+
   it("redirects guest-only routes away from existing wallets", async () => {
     applyWalletSession(false);
     await router.push("/onboarding/create");
@@ -70,7 +80,7 @@ describe("router guards", () => {
     expect(router.currentRoute.value.fullPath).toBe("/wallet");
   });
 
-  it("redirects locked pending backup routes to unlock", async () => {
+  it("allows locked pending backup routes for newly created accounts", async () => {
     applyWalletSession(false);
     useOnboardingStore(pinia).stageDraft({
       draft: {
@@ -87,7 +97,7 @@ describe("router guards", () => {
     });
 
     await router.push("/onboarding/backup");
-    expect(router.currentRoute.value.fullPath).toBe("/unlock");
+    expect(router.currentRoute.value.fullPath).toBe("/onboarding/backup");
   });
 
   it("redirects create and import entry routes back to backup when a draft is pending", async () => {

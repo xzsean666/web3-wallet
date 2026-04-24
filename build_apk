@@ -10,11 +10,14 @@ DEFAULT_KEY_ALIAS="upload"
 DEFAULT_RELEASE_DIR="$PROJECT_ROOT/release"
 DEFAULT_BUILD_TARGET="aarch64"
 APK_OUTPUT_DIR="$PROJECT_ROOT/src-tauri/gen/android/app/build/outputs/apk"
+TAURI_CONFIG_PATH="$PROJECT_ROOT/src-tauri/tauri.conf.json"
+PACKAGE_JSON_PATH="$PROJECT_ROOT/package.json"
 
 KEYSTORE_PATH="${ANDROID_KEYSTORE_PATH:-$DEFAULT_KEYSTORE_PATH}"
 KEY_ALIAS="${ANDROID_KEY_ALIAS:-$DEFAULT_KEY_ALIAS}"
 RELEASE_DIR="${ANDROID_RELEASE_DIR:-$DEFAULT_RELEASE_DIR}"
 BUILD_TARGET="${ANDROID_BUILD_TARGET:-$DEFAULT_BUILD_TARGET}"
+AUTO_VERSION_BUMP="${ANDROID_AUTO_VERSION_BUMP:-1}"
 ALLOW_NEW_KEYSTORE="${ALLOW_NEW_KEYSTORE:-0}"
 STORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-}"
 KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-}"
@@ -30,6 +33,7 @@ Usage:
 Options:
   --target TARGET       Android build target, default: aarch64
   --universal           Build all ABIs into a universal APK
+  --no-version-bump     Keep the current app version instead of incrementing it
   --create-keystore     Allow minting a new release keystore when none exists
   --release-dir PATH    Directory to copy the final APK into
   --help                Show this help
@@ -43,6 +47,7 @@ Environment variables:
   ANDROID_KEY_PASSWORD_FILE
   ANDROID_RELEASE_DIR
   ANDROID_BUILD_TARGET
+  ANDROID_AUTO_VERSION_BUMP
   ALLOW_NEW_KEYSTORE
 EOF
 }
@@ -70,6 +75,56 @@ read_secret_from_file() {
   printf '%s' "$secret"
 }
 
+read_app_version() {
+  node -e 'const fs=require("fs"); const cfg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((cfg.version || "0.0.0").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$TAURI_CONFIG_PATH"
+}
+
+bump_app_version() {
+  node - "$TAURI_CONFIG_PATH" "$PACKAGE_JSON_PATH" <<'NODE'
+const fs = require('fs');
+
+const [tauriConfigPath, packageJsonPath] = process.argv.slice(2);
+
+function readJson(filePath) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function writeJson(filePath, data) {
+  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
+}
+
+function bumpTrailingNumber(version) {
+  const match = String(version).match(/^(.*?)(\d+)$/);
+  if (!match) {
+    throw new Error(`Version must end with a number: ${version}`);
+  }
+
+  const [, prefix, numericSuffix] = match;
+  const nextSuffix = (BigInt(numericSuffix) + 1n).toString();
+  const paddedNextSuffix = numericSuffix.startsWith('0')
+    ? nextSuffix.padStart(numericSuffix.length, '0')
+    : nextSuffix;
+
+  return `${prefix}${paddedNextSuffix}`;
+}
+
+const tauriConfig = readJson(tauriConfigPath);
+const nextVersion = bumpTrailingNumber(tauriConfig.version || '0.0.0');
+tauriConfig.version = nextVersion;
+writeJson(tauriConfigPath, tauriConfig);
+
+if (fs.existsSync(packageJsonPath)) {
+  const packageJson = readJson(packageJsonPath);
+  if (typeof packageJson.version === 'string') {
+    packageJson.version = nextVersion;
+    writeJson(packageJsonPath, packageJson);
+  }
+}
+
+console.log(nextVersion);
+NODE
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target)
@@ -78,6 +133,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --universal)
       BUILD_TARGET=""
+      shift
+      ;;
+    --no-version-bump)
+      AUTO_VERSION_BUMP=0
       shift
       ;;
     --create-keystore)
@@ -116,9 +175,6 @@ if [[ ! -f "$KEYSTORE_PATH" && $CREATE_KEYSTORE -eq 0 ]] && ! is_truthy "$ALLOW_
   printf 'Run `pnpm android:keystore` first, or pass `--create-keystore` / `ALLOW_NEW_KEYSTORE=1` if you intentionally want a new signing identity.\n' >&2
   exit 1
 fi
-
-APP_NAME="$(node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((pkg.name || "app").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$PROJECT_ROOT/package.json")"
-APP_VERSION="$(node -e 'const fs=require("fs"); const cfg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((cfg.version || "0.0.0").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$PROJECT_ROOT/src-tauri/tauri.conf.json")"
 
 if [[ -z "$STORE_PASSWORD" ]]; then
   if [[ -n "$STORE_PASSWORD_FILE" ]]; then
@@ -167,6 +223,14 @@ if [[ ! -f "$KEYSTORE_PATH" ]]; then
   ANDROID_KEYSTORE_PASSWORD_FILE="$TMP_STORE_PASSWORD_FILE" \
   ANDROID_KEY_PASSWORD_FILE="$TMP_KEY_PASSWORD_FILE" \
     bash "$PROJECT_ROOT/scripts/generate-android-keystore.sh" --out "$KEYSTORE_PATH" --alias "$KEY_ALIAS"
+fi
+
+APP_NAME="$(node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((pkg.name || "app").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$PACKAGE_JSON_PATH")"
+if is_truthy "$AUTO_VERSION_BUMP"; then
+  APP_VERSION="$(bump_app_version)"
+  printf 'App version bumped to %s\n' "$APP_VERSION"
+else
+  APP_VERSION="$(read_app_version)"
 fi
 
 BUILD_CMD=(pnpm tauri android build --apk)

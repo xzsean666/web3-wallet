@@ -1,5 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { NetworkConfig } from "../types/network";
+import type { NetworkConfig, NetworkRpcOverrides } from "../types/network";
 import type { ActivityItem, AddressBookEntry, SendDraft, TrackedToken } from "../types/wallet";
 
 const UI_STATE_STORAGE_KEY = "web3-wallet/ui-state/v2";
@@ -8,6 +8,7 @@ const TAURI_PENDING_STORAGE_KEY = "web3-wallet/ui-state/tauri-pending/v1";
 
 export interface PersistedUiState {
   customNetworks?: NetworkConfig[];
+  networkRpcOverrides?: NetworkRpcOverrides;
   activeNetworkId?: string;
 }
 
@@ -64,10 +65,20 @@ function readRawEnvelope() {
 }
 
 function extractGlobalState(value: Record<string, unknown>): PersistedUiState {
+  const networkRpcOverrides: NetworkRpcOverrides | undefined = isPlainObject(value.networkRpcOverrides)
+    ? Object.fromEntries(
+        Object.entries(value.networkRpcOverrides).filter(
+          (entry): entry is [string, string] =>
+            typeof entry[0] === "string" && typeof entry[1] === "string",
+        ),
+      )
+    : undefined;
+
   return {
     customNetworks: Array.isArray(value.customNetworks)
       ? (value.customNetworks as NetworkConfig[])
       : undefined,
+    networkRpcOverrides,
     activeNetworkId:
       typeof value.activeNetworkId === "string" ? value.activeNetworkId : undefined,
   };
@@ -211,6 +222,7 @@ function envelopeHasData(envelope: PersistedUiStateEnvelope) {
   return (
     envelope.global.activeNetworkId !== undefined ||
     envelope.global.customNetworks !== undefined ||
+    envelope.global.networkRpcOverrides !== undefined ||
     Object.keys(envelope.walletScopes).length > 0
   );
 }

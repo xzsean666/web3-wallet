@@ -16,14 +16,22 @@ const formErrors = ref<string[]>([]);
 const isValidating = ref(false);
 const validation = ref<RpcEndpointValidation | null>(null);
 const validatedDraftKey = ref("");
+const rpcEditingNetworkId = ref<string | null>(null);
+const rpcDraft = ref("");
+const rpcErrors = ref<string[]>([]);
+const isValidatingRpcOverride = ref(false);
+const rpcValidation = ref<RpcEndpointValidation | null>(null);
+const validatedRpcDraftKey = ref("");
 const draft = ref<NetworkDraft>({
   name: "",
   chainId: "",
   rpcUrl: "",
   symbol: "",
   explorerUrl: "",
+  environment: "mainnet",
 });
 let validationRequestId = 0;
+let rpcValidationRequestId = 0;
 
 const draftKey = computed(() =>
   JSON.stringify({
@@ -32,12 +40,35 @@ const draftKey = computed(() =>
     explorerUrl: draft.value.explorerUrl.trim(),
   }),
 );
+const rpcEditingNetwork = computed(() =>
+  rpcEditingNetworkId.value
+    ? allNetworks.value.find((network) => network.id === rpcEditingNetworkId.value) ?? null
+    : null,
+);
+const rpcDraftKey = computed(() =>
+  JSON.stringify({
+    networkId: rpcEditingNetwork.value?.id ?? null,
+    chainId: rpcEditingNetwork.value?.chainId ?? null,
+    rpcUrl: rpcDraft.value.trim(),
+  }),
+);
 const validationTone = computed(() => {
   if (validation.value?.status === "ok") {
     return "accent";
   }
 
   if (validation.value) {
+    return "warning";
+  }
+
+  return "default";
+});
+const rpcValidationTone = computed(() => {
+  if (rpcValidation.value?.status === "ok") {
+    return "accent";
+  }
+
+  if (rpcValidation.value) {
     return "warning";
   }
 
@@ -58,15 +89,47 @@ const validationStatusLabel = computed(() => {
 
   return "Unavailable";
 });
-const presetNetworks = computed(() =>
-  allNetworks.value.filter((network) => network.source === "preset"),
+const rpcValidationStatusLabel = computed(() => {
+  if (!rpcValidation.value) {
+    return "Not Checked";
+  }
+
+  if (rpcValidation.value.status === "ok") {
+    return "Reachable";
+  }
+
+  if (rpcValidation.value.status === "mismatch") {
+    return "Chain Mismatch";
+  }
+
+  return "Unavailable";
+});
+const mainnetNetworks = computed(() =>
+  allNetworks.value.filter((network) => network.environment === "mainnet"),
 );
-const presetNetworkCount = computed(() => presetNetworks.value.length);
+const testnetNetworks = computed(() =>
+  allNetworks.value.filter((network) => network.environment === "testnet"),
+);
+const mainnetNetworkCount = computed(() => mainnetNetworks.value.length);
+const testnetNetworkCount = computed(() => testnetNetworks.value.length);
+const presetNetworkCount = computed(() =>
+  allNetworks.value.filter((network) => network.source === "preset").length,
+);
 const customNetworkCount = computed(() => customNetworks.value.length);
+const activeNetworkTone = computed(() =>
+  activeNetwork.value.environment === "testnet" ? "warning" : "accent",
+);
+const activeNetworkEnvironmentLabel = computed(() => networkEnvironmentLabel(activeNetwork.value));
 
 watch(draftKey, (nextKey) => {
   if (validatedDraftKey.value && validatedDraftKey.value !== nextKey) {
     validation.value = null;
+  }
+});
+
+watch(rpcDraftKey, (nextKey) => {
+  if (validatedRpcDraftKey.value && validatedRpcDraftKey.value !== nextKey) {
+    rpcValidation.value = null;
   }
 });
 
@@ -81,6 +144,7 @@ function resetForm() {
     rpcUrl: "",
     symbol: "",
     explorerUrl: "",
+    environment: "mainnet",
   };
 }
 
@@ -95,7 +159,44 @@ function startEdit(network: NetworkConfig) {
     rpcUrl: network.rpcUrl,
     symbol: network.symbol,
     explorerUrl: network.explorerUrl ?? "",
+    environment: network.environment,
   };
+}
+
+function resetRpcOverrideForm() {
+  rpcEditingNetworkId.value = null;
+  rpcDraft.value = "";
+  rpcErrors.value = [];
+  rpcValidation.value = null;
+  validatedRpcDraftKey.value = "";
+}
+
+function startRpcOverrideEdit(network: NetworkConfig) {
+  rpcEditingNetworkId.value = network.id;
+  rpcDraft.value = network.rpcUrl;
+  rpcErrors.value = [];
+  rpcValidation.value = null;
+  validatedRpcDraftKey.value = "";
+}
+
+function networkEnvironmentLabel(network: NetworkConfig) {
+  return network.environment === "testnet" ? "测试网" : "正式网";
+}
+
+function networkSourceLabel(network: NetworkConfig) {
+  return network.source === "custom" ? "自定义" : "预置";
+}
+
+function environmentChipClass(network: NetworkConfig) {
+  return network.environment === "testnet" ? "status-chip--warning" : "status-chip--accent";
+}
+
+function isRpcOverridden(network: NetworkConfig) {
+  return network.source === "preset" && networksStore.hasNetworkRpcOverride(network.id);
+}
+
+function defaultRpcUrl(network: NetworkConfig) {
+  return networksStore.getDefaultNetworkRpcUrl(network.id);
 }
 
 async function runRpcValidation() {
@@ -172,6 +273,108 @@ async function submitNetwork() {
   resetForm();
 }
 
+async function runRpcOverrideValidation() {
+  const network = rpcEditingNetwork.value;
+
+  if (!network) {
+    rpcErrors.value = ["请先选择要更改 RPC 的网络"];
+    rpcValidation.value = null;
+    validatedRpcDraftKey.value = "";
+    return false;
+  }
+
+  const { errors, normalizedRpcUrl } = networksStore.validateRpcUrl(rpcDraft.value);
+
+  if (errors.length > 0 || !normalizedRpcUrl) {
+    rpcErrors.value = errors;
+    rpcValidation.value = null;
+    validatedRpcDraftKey.value = "";
+    return false;
+  }
+
+  rpcErrors.value = [];
+  isValidatingRpcOverride.value = true;
+  const requestId = ++rpcValidationRequestId;
+  const requestDraftKey = rpcDraftKey.value;
+
+  try {
+    const result = await validateRpcEndpoint({
+      expectedChainId: network.chainId,
+      rpcUrl: normalizedRpcUrl,
+    });
+
+    if (requestId !== rpcValidationRequestId || requestDraftKey !== rpcDraftKey.value) {
+      rpcValidation.value = null;
+      validatedRpcDraftKey.value = "";
+      rpcErrors.value = ["RPC 地址在校验期间发生变化，请重新校验。"];
+      return false;
+    }
+
+    rpcValidation.value = result;
+    validatedRpcDraftKey.value = requestDraftKey;
+
+    if (result.status !== "ok") {
+      rpcErrors.value = [result.message];
+      return false;
+    }
+
+    return true;
+  } finally {
+    if (requestId === rpcValidationRequestId) {
+      isValidatingRpcOverride.value = false;
+    }
+  }
+}
+
+async function submitRpcOverride() {
+  const network = rpcEditingNetwork.value;
+
+  if (!network) {
+    rpcErrors.value = ["请先选择要更改 RPC 的网络"];
+    return;
+  }
+
+  const needsValidation =
+    !rpcValidation.value ||
+    rpcValidation.value.status !== "ok" ||
+    validatedRpcDraftKey.value !== rpcDraftKey.value;
+
+  if (needsValidation) {
+    const validated = await runRpcOverrideValidation();
+
+    if (!validated) {
+      return;
+    }
+  }
+
+  const result = networksStore.saveNetworkRpcUrl(network.id, rpcDraft.value);
+
+  if (!result.ok) {
+    rpcErrors.value = result.errors;
+    return;
+  }
+
+  rpcDraft.value = allNetworks.value.find((entry) => entry.id === network.id)?.rpcUrl ?? rpcDraft.value;
+  rpcErrors.value = [];
+}
+
+function restoreDefaultRpc(network: NetworkConfig) {
+  const defaultUrl = defaultRpcUrl(network);
+
+  if (!defaultUrl) {
+    return;
+  }
+
+  networksStore.clearNetworkRpcOverride(network.id);
+
+  if (rpcEditingNetworkId.value === network.id) {
+    rpcDraft.value = defaultUrl;
+    rpcErrors.value = [];
+    rpcValidation.value = null;
+    validatedRpcDraftKey.value = "";
+  }
+}
+
 function removeNetwork(id: string) {
   networksStore.removeCustomNetwork(id);
 
@@ -188,13 +391,14 @@ function removeNetwork(id: string) {
     subtitle="保存前会校验 RPC 可访问性、Chain ID 和最新区块，但这只是连通性检查，自定义 RPC 仍然可能返回不可信链上数据。"
   >
     <section class="status-grid">
-      <SectionCard title="Active" description="当前生效网络" tone="accent">
+      <SectionCard title="Active" description="当前生效网络" :tone="activeNetworkTone">
         <p class="metric-value">{{ activeNetwork.name }}</p>
-        <p>{{ formatChainLabel(activeNetwork.chainId) }}</p>
+        <p>{{ activeNetworkEnvironmentLabel }} · {{ formatChainLabel(activeNetwork.chainId) }}</p>
       </SectionCard>
 
       <SectionCard title="Total Networks" description="预置 + 自定义">
         <p class="metric-value">{{ allNetworks.length }}</p>
+        <p>{{ mainnetNetworkCount }} 正式网 · {{ testnetNetworkCount }} 测试网</p>
         <p>{{ presetNetworkCount }} preset · {{ customNetworkCount }} custom</p>
       </SectionCard>
 
@@ -211,13 +415,13 @@ function removeNetwork(id: string) {
 
     <section class="page-grid page-grid--2">
       <SectionCard
-        title="Preset Networks"
-        description="官方预置网络只读但可切换，保证用户始终有可信入口。"
+        title="Mainnet Networks"
+        description="正式网与测试网分开展示，切换前先确认链环境。"
       >
-        <p class="metric-value">{{ presetNetworkCount }} preset</p>
+        <p class="metric-value">{{ mainnetNetworkCount }} 正式网</p>
         <div class="network-list">
           <div
-            v-for="network in presetNetworks"
+            v-for="network in mainnetNetworks"
             :key="network.id"
             :class="['network-item', { 'network-item--active': activeNetwork.id === network.id }]"
           >
@@ -225,11 +429,21 @@ function removeNetwork(id: string) {
               <div class="network-item__meta">
                 <strong>{{ network.name }}</strong>
                 <div class="chip-row">
-                  <span class="status-chip status-chip--accent">{{ network.symbol }}</span>
+                  <span :class="['status-chip', environmentChipClass(network)]">
+                    {{ networkEnvironmentLabel(network) }}
+                  </span>
+                  <span class="status-chip">{{ networkSourceLabel(network) }}</span>
+                  <span v-if="isRpcOverridden(network)" class="status-chip status-chip--warning">
+                    自定义 RPC
+                  </span>
+                  <span class="status-chip">{{ network.symbol }}</span>
                   <span class="status-chip">{{ formatChainLabel(network.chainId) }}</span>
                 </div>
               </div>
               <p>{{ network.rpcUrl }}</p>
+              <p v-if="isRpcOverridden(network)" class="helper-text">
+                默认 RPC：{{ defaultRpcUrl(network) }}
+              </p>
             </div>
             <div class="inline-actions">
               <button
@@ -239,20 +453,52 @@ function removeNetwork(id: string) {
                 @click="networksStore.setActiveNetwork(network.id)"
               >
                 {{ activeNetwork.id === network.id ? "当前使用" : "切换到此网络" }}
+              </button>
+              <button
+                class="button button--ghost button--small"
+                type="button"
+                @click="startRpcOverrideEdit(network)"
+              >
+                更改 RPC
+              </button>
+              <button
+                v-if="isRpcOverridden(network)"
+                class="button button--ghost button--small"
+                type="button"
+                @click="restoreDefaultRpc(network)"
+              >
+                恢复默认 RPC
+              </button>
+              <button
+                v-if="network.source === 'custom'"
+                class="button button--ghost button--small"
+                type="button"
+                @click="startEdit(network)"
+              >
+                编辑
+              </button>
+              <button
+                v-if="network.source === 'custom'"
+                class="button button--danger button--small"
+                type="button"
+                @click="removeNetwork(network.id)"
+              >
+                删除
               </button>
             </div>
           </div>
         </div>
       </SectionCard>
 
-      <SectionCard title="Custom Networks" description="自定义网络支持校验、编辑与删除">
-        <p class="metric-value">{{ customNetworkCount }} custom</p>
+      <SectionCard
+        title="Testnet Networks"
+        description="测试网资产仅用于开发和验证，不应当作正式网余额。"
+        tone="warning"
+      >
+        <p class="metric-value">{{ testnetNetworkCount }} 测试网</p>
         <div class="network-list">
-          <p v-if="customNetworks.length === 0" class="helper-text">
-            还没有自定义网络，保存后会自动添加到列表。
-          </p>
           <div
-            v-for="network in customNetworks"
+            v-for="network in testnetNetworks"
             :key="network.id"
             :class="['network-item', { 'network-item--active': activeNetwork.id === network.id }]"
           >
@@ -260,11 +506,21 @@ function removeNetwork(id: string) {
               <div class="network-item__meta">
                 <strong>{{ network.name }}</strong>
                 <div class="chip-row">
-                  <span class="status-chip status-chip--accent">{{ network.symbol }}</span>
+                  <span :class="['status-chip', environmentChipClass(network)]">
+                    {{ networkEnvironmentLabel(network) }}
+                  </span>
+                  <span class="status-chip">{{ networkSourceLabel(network) }}</span>
+                  <span v-if="isRpcOverridden(network)" class="status-chip status-chip--warning">
+                    自定义 RPC
+                  </span>
+                  <span class="status-chip">{{ network.symbol }}</span>
                   <span class="status-chip">{{ formatChainLabel(network.chainId) }}</span>
                 </div>
               </div>
               <p>{{ network.rpcUrl }}</p>
+              <p v-if="isRpcOverridden(network)" class="helper-text">
+                默认 RPC：{{ defaultRpcUrl(network) }}
+              </p>
             </div>
             <div class="inline-actions">
               <button
@@ -275,10 +531,35 @@ function removeNetwork(id: string) {
               >
                 {{ activeNetwork.id === network.id ? "当前使用" : "切换到此网络" }}
               </button>
-              <button class="button button--ghost button--small" type="button" @click="startEdit(network)">
+              <button
+                class="button button--ghost button--small"
+                type="button"
+                @click="startRpcOverrideEdit(network)"
+              >
+                更改 RPC
+              </button>
+              <button
+                v-if="isRpcOverridden(network)"
+                class="button button--ghost button--small"
+                type="button"
+                @click="restoreDefaultRpc(network)"
+              >
+                恢复默认 RPC
+              </button>
+              <button
+                v-if="network.source === 'custom'"
+                class="button button--ghost button--small"
+                type="button"
+                @click="startEdit(network)"
+              >
                 编辑
               </button>
-              <button class="button button--danger button--small" type="button" @click="removeNetwork(network.id)">
+              <button
+                v-if="network.source === 'custom'"
+                class="button button--danger button--small"
+                type="button"
+                @click="removeNetwork(network.id)"
+              >
                 删除
               </button>
             </div>
@@ -288,6 +569,69 @@ function removeNetwork(id: string) {
     </section>
 
     <section class="page-grid page-grid--2">
+      <SectionCard
+        title="Change RPC URL"
+        description="只替换当前网络的 RPC 节点，保存前必须返回相同 Chain ID。"
+        :tone="rpcValidationTone"
+      >
+        <template v-if="rpcEditingNetwork">
+          <form class="form-grid" @submit.prevent="submitRpcOverride">
+            <label class="field">
+              <span>网络</span>
+              <input :value="rpcEditingNetwork.name" disabled />
+            </label>
+            <label class="field">
+              <span>Chain ID</span>
+              <input :value="formatChainLabel(rpcEditingNetwork.chainId)" disabled />
+            </label>
+            <label class="field">
+              <span>RPC URL</span>
+              <input v-model="rpcDraft" placeholder="https://rpc.example.org" />
+            </label>
+
+            <p v-if="rpcEditingNetwork.source === 'preset'" class="helper-text">
+              默认 RPC：{{ defaultRpcUrl(rpcEditingNetwork) }}
+            </p>
+
+            <ul v-if="rpcErrors.length" class="bullet-list helper-text helper-text--error">
+              <li v-for="error in rpcErrors" :key="error">{{ error }}</li>
+            </ul>
+
+            <p v-if="rpcValidation" class="helper-text">
+              {{ rpcValidationStatusLabel }} · {{ rpcValidation.message }}
+            </p>
+
+            <div class="form-actions">
+              <button
+                class="button button--secondary"
+                type="button"
+                :disabled="isValidatingRpcOverride"
+                @click="runRpcOverrideValidation"
+              >
+                {{ isValidatingRpcOverride ? "正在校验 RPC..." : "先校验 RPC" }}
+              </button>
+              <button class="button button--primary" type="submit" :disabled="isValidatingRpcOverride">
+                校验并保存 RPC
+              </button>
+              <button
+                v-if="isRpcOverridden(rpcEditingNetwork)"
+                class="button button--ghost"
+                type="button"
+                @click="restoreDefaultRpc(rpcEditingNetwork)"
+              >
+                恢复默认 RPC
+              </button>
+              <button class="button button--ghost" type="button" @click="resetRpcOverrideForm">
+                取消
+              </button>
+            </div>
+          </form>
+        </template>
+        <p v-else class="empty-state">
+          在上方正式网或测试网列表中点击“更改 RPC”。
+        </p>
+      </SectionCard>
+
       <SectionCard
         :title="editingId ? 'Edit Custom Network' : 'Add Custom Network'"
         description="只接受 EVM 网络参数，保存前必须通过 RPC 连通性校验"
@@ -300,6 +644,13 @@ function removeNetwork(id: string) {
           <label class="field">
             <span>Chain ID</span>
             <input v-model="draft.chainId" inputmode="numeric" placeholder="84532" />
+          </label>
+          <label class="field">
+            <span>网络类型</span>
+            <select v-model="draft.environment">
+              <option value="mainnet">正式网</option>
+              <option value="testnet">测试网</option>
+            </select>
           </label>
           <label class="field">
             <span>RPC URL</span>
@@ -375,6 +726,7 @@ function removeNetwork(id: string) {
           <li>Chain ID 不能和现有网络重复</li>
           <li>RPC URL 必须是 HTTP 或 HTTPS</li>
           <li>保存前会校验 Chain ID 与最新区块</li>
+          <li>预置网络只允许覆盖 RPC URL，可随时恢复默认 RPC</li>
           <li>自定义 RPC 即使校验通过，也不代表节点可信或返回结果未被篡改</li>
         </ul>
       </SectionCard>

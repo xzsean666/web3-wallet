@@ -48,6 +48,7 @@ async function loadEvm() {
 const network = {
   id: "ethereum",
   source: "preset" as const,
+  environment: "mainnet" as const,
   name: "Ethereum",
   chainId: 1,
   rpcUrl: "https://rpc.example.org",

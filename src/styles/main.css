@@ -825,6 +825,12 @@ body {
   color: #6d6154;
 }
 
+.meta-pill--testnet {
+  background: #fff7df;
+  border: 1px solid rgba(171, 124, 13, 0.22);
+  color: #8a5f06;
+}
+
 .wallet-chrome--compact .wallet-chrome__main {
   align-items: center;
   gap: 10px;
@@ -1267,6 +1273,27 @@ h1 {
   color: #fff4e7;
 }
 
+.home-balance-card .meta-pill--testnet {
+  background: rgba(251, 191, 36, 0.2);
+  border-color: rgba(251, 191, 36, 0.42);
+  color: #fff1bd;
+}
+
+.home-balance-card .status-chip {
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.home-balance-card .status-chip--accent {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f8f1e8;
+}
+
+.home-balance-card .status-chip--warning {
+  background: rgba(251, 191, 36, 0.22);
+  border-color: rgba(251, 191, 36, 0.46);
+  color: #fff1bd;
+}
+
 .home-balance-card .wallet-mini-profile strong,
 .home-balance-card .home-balance-card__amount,
 .home-balance-card .home-balance-card__eyebrow,
@@ -1341,6 +1368,34 @@ h1 {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.home-testnet-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(251, 191, 36, 0.42);
+  background: rgba(251, 191, 36, 0.16);
+  color: #fff1bd;
+  overflow-wrap: anywhere;
+}
+
+.home-testnet-banner strong {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #fbbf24;
+  color: #241709;
+  font-size: 0.74rem;
+}
+
+.home-testnet-banner span {
+  min-width: 0;
+  color: #fff6da;
+  font-size: 0.78rem;
+  line-height: 1.35;
 }
 
 .home-balance-card__eyebrow {

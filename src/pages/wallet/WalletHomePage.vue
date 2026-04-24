@@ -45,6 +45,10 @@ const nativeAsset = computed(() => ({
   symbol: activeNetwork.value.symbol,
   balance: snapshot.value.nativeBalance,
 }));
+const isActiveTestnet = computed(() => activeNetwork.value.environment === "testnet");
+const activeNetworkEnvironmentLabel = computed(() =>
+  isActiveTestnet.value ? "测试网" : "正式网",
+);
 const filteredTokensForActiveNetwork = computed(() => tokensForActiveNetwork.value);
 const showNativeAsset = computed(() => true);
 const visibleAssetCount = computed(() =>
@@ -268,9 +272,18 @@ watch([pendingActivities, allNetworks], () => {
       </div>
 
       <div class="home-balance-card__network">
-        <span class="meta-pill">{{ activeNetwork.name }}</span>
+        <span :class="['meta-pill', isActiveTestnet ? 'meta-pill--testnet' : '']">
+          {{ activeNetwork.name }}
+        </span>
+        <span :class="['status-chip', isActiveTestnet ? 'status-chip--warning' : 'status-chip--accent']">
+          {{ activeNetworkEnvironmentLabel }}
+        </span>
         <span class="home-balance-card__meta">{{ homeSyncLabel }}</span>
         <span v-if="snapshot.latestBlock" class="home-balance-card__meta">块高 {{ snapshot.latestBlock }}</span>
+      </div>
+      <div v-if="isActiveTestnet" class="home-testnet-banner">
+        <strong>测试网</strong>
+        <span>当前显示的是测试网络资产，请勿当作正式网余额。</span>
       </div>
       <p class="home-balance-card__amount">{{ formatTokenAmount(nativeAsset.balance) }} {{ nativeAsset.symbol }}</p>
 

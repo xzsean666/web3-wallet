@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { storeToRefs } from "pinia";
-import { useRouter } from "vue-router";
+import { RouterLink, useRouter } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
 import { useSessionStore } from "../../stores/session";
 import { formatDateTime, shortenAddress } from "../../utils/format";
@@ -131,6 +131,20 @@ async function unlockWallet() {
             </button>
           </div>
         </form>
+      </SectionCard>
+
+      <SectionCard title="Add Wallet" description="新增一个独立本地账号">
+        <div class="form-actions">
+          <RouterLink class="button button--primary" to="/settings/accounts/import">
+            导入账号
+          </RouterLink>
+          <RouterLink class="button button--secondary" to="/settings/accounts/create">
+            创建账号
+          </RouterLink>
+        </div>
+        <p class="helper-text">
+          从已有助记词继续派生地址时，需要先解锁原账号后再进入账号管理。
+        </p>
       </SectionCard>
 
       <SectionCard title="Biometric" description="当前展示的是入口状态，不承诺平台能力">

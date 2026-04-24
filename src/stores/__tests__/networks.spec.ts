@@ -56,20 +56,68 @@ describe("networks store", () => {
     expect(result.errors.length).toBeGreaterThan(0);
   });
 
-  it("ships preset test networks and lets the user switch to them", () => {
+  it("ships preset mainnet and testnet networks and lets the user switch to them", () => {
     const store = useNetworksStore();
 
     expect(store.allNetworks.map((network) => network.id)).toEqual(
-      expect.arrayContaining(["base-sepolia", "op-sepolia", "bsc-testnet", "opbnb-testnet"]),
+      expect.arrayContaining([
+        "bsc",
+        "polygon",
+        "astar",
+        "soneium",
+        "base-sepolia",
+        "op-sepolia",
+        "bsc-testnet",
+        "opbnb-testnet",
+        "polygon-amoy",
+        "astar-shibuya",
+        "soneium-minato",
+      ]),
     );
+    expect(store.allNetworks.find((network) => network.id === "bsc")).toMatchObject({
+      environment: "mainnet",
+      chainId: 56,
+      symbol: "BNB",
+    });
+    expect(store.allNetworks.find((network) => network.id === "polygon")).toMatchObject({
+      environment: "mainnet",
+      chainId: 137,
+      symbol: "POL",
+    });
+    expect(store.allNetworks.find((network) => network.id === "polygon-amoy")).toMatchObject({
+      environment: "testnet",
+      chainId: 80002,
+      symbol: "POL",
+    });
+    expect(store.allNetworks.find((network) => network.id === "astar")).toMatchObject({
+      environment: "mainnet",
+      chainId: 592,
+      symbol: "ASTR",
+    });
+    expect(store.allNetworks.find((network) => network.id === "astar-shibuya")).toMatchObject({
+      environment: "testnet",
+      chainId: 81,
+      symbol: "SBY",
+    });
+    expect(store.allNetworks.find((network) => network.id === "soneium")).toMatchObject({
+      environment: "mainnet",
+      chainId: 1868,
+      symbol: "ETH",
+    });
+    expect(store.allNetworks.find((network) => network.id === "soneium-minato")).toMatchObject({
+      environment: "testnet",
+      chainId: 1946,
+      symbol: "ETH",
+    });
 
-    store.setActiveNetwork("bsc-testnet");
+    store.setActiveNetwork("soneium-minato");
 
-    expect(store.activeNetworkId).toBe("bsc-testnet");
+    expect(store.activeNetworkId).toBe("soneium-minato");
     expect(store.activeNetwork).toMatchObject({
-      name: "BSC Testnet",
-      chainId: 97,
-      symbol: "tBNB",
+      name: "Soneium Minato",
+      environment: "testnet",
+      chainId: 1946,
+      symbol: "ETH",
     });
   });
 
@@ -82,15 +130,50 @@ describe("networks store", () => {
       rpcUrl: "https://rpc.local-rollup.dev",
       symbol: "LRC",
       explorerUrl: "https://scan.local-rollup.dev",
+      environment: "testnet",
     });
 
     expect(createResult.ok).toBe(true);
     expect(store.customNetworks.length).toBe(1);
+    expect(store.customNetworks[0]).toMatchObject({
+      environment: "testnet",
+    });
 
     store.removeCustomNetwork("custom-31337");
 
     expect(store.customNetworks.length).toBe(0);
     expect(store.activeNetworkId).toBe("ethereum");
+  });
+
+  it("overrides and restores preset rpc urls without changing network metadata", async () => {
+    const store = useNetworksStore();
+
+    const updateResult = store.saveNetworkRpcUrl("polygon", "https://polygon.publicnode.com");
+
+    expect(updateResult.ok).toBe(true);
+    expect(store.hasNetworkRpcOverride("polygon")).toBe(true);
+    expect(store.getDefaultNetworkRpcUrl("polygon")).toBe("https://polygon.drpc.org");
+    expect(store.allNetworks.find((network) => network.id === "polygon")).toMatchObject({
+      chainId: 137,
+      rpcUrl: "https://polygon.publicnode.com/",
+      symbol: "POL",
+      environment: "mainnet",
+    });
+    await nextTick();
+
+    setActivePinia(createPinia());
+    const rehydratedStore = useNetworksStore();
+
+    expect(rehydratedStore.allNetworks.find((network) => network.id === "polygon")).toMatchObject({
+      rpcUrl: "https://polygon.publicnode.com/",
+    });
+
+    rehydratedStore.clearNetworkRpcOverride("polygon");
+
+    expect(rehydratedStore.hasNetworkRpcOverride("polygon")).toBe(false);
+    expect(rehydratedStore.allNetworks.find((network) => network.id === "polygon")).toMatchObject({
+      rpcUrl: "https://polygon.drpc.org",
+    });
   });
 
   it("hydrates persisted custom networks and active network id", async () => {

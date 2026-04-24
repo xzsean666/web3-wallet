@@ -4,6 +4,7 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import WalletHomePage from "../wallet/WalletHomePage.vue";
 import { clearPersistedUiState } from "../../services/uiState";
+import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
 import { useWalletStore } from "../../stores/wallet";
 
@@ -152,6 +153,59 @@ describe("WalletHomePage", () => {
       txHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       status: "complete",
     });
+
+    wrapper.unmount();
+  });
+
+  it("shows a prominent testnet banner on the wallet home page", async () => {
+    const sessionStore = useSessionStore();
+
+    sessionStore.applyWalletSession(
+      {
+        activeAccountId: "account-1",
+        accounts: [
+          {
+            accountId: "account-1",
+            derivationGroupId: "account-1",
+            derivationIndex: 0,
+            walletLabel: "Primary Wallet",
+            address: "0x1111111111111111111111111111111111111111",
+            source: "created",
+            secretKind: "mnemonic",
+            isBiometricEnabled: true,
+            hasBackedUpMnemonic: true,
+            createdAt: "2026-04-07T00:00:00.000Z",
+            lastUnlockedAt: "2026-04-07T00:00:00.000Z",
+          },
+        ],
+      },
+      { unlocked: true },
+    );
+    useNetworksStore().setActiveNetwork("polygon-amoy");
+    fetchPortfolioSnapshotMock.mockResolvedValue({
+      networkId: "polygon-amoy",
+      accountAddress: "0x1111111111111111111111111111111111111111",
+      nativeBalance: "0",
+      latestBlock: "80002",
+      tokenBalances: {},
+      lastSyncedAt: "2026-04-07T00:00:00.000Z",
+      status: "ready",
+      error: "",
+    });
+
+    const wrapper = mount(WalletHomePage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+
+    expect(wrapper.find(".home-testnet-banner").text()).toContain("测试网");
+    expect(wrapper.find(".home-testnet-banner").text()).toContain("请勿当作正式网余额");
 
     wrapper.unmount();
   });

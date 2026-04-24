@@ -96,6 +96,7 @@ pnpm android:release
 
 这个脚本会自动完成：
 
+- 将 app 版本号最后一段数字加 1，例如 `0.1.0` -> `0.1.1`
 - 构建 Android release APK
 - 对 `unsigned.apk` 做对齐和签名
 - 把最终可安装 APK 放到根目录 `release/`
@@ -136,6 +137,12 @@ ALLOW_NEW_KEYSTORE=1 ./build_apk
 
 ```bash
 ./build_apk --release-dir /your/output/path
+```
+
+如果某次构建不想递增版本号：
+
+```bash
+./build_apk --no-version-bump
 ```
 
 下面是拆开的手动流程。
