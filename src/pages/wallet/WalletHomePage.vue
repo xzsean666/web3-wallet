@@ -291,6 +291,7 @@ watch([pendingActivities, allNetworks], () => {
 
       <div class="home-quick-actions">
         <RouterLink class="button button--secondary" to="/wallet/send">发送</RouterLink>
+        <RouterLink class="button button--secondary" :to="{ name: 'wallet-send', query: { scan: '1' } }">扫码付款</RouterLink>
         <RouterLink class="button button--secondary" to="/wallet/receive">收款</RouterLink>
         <RouterLink class="button button--ghost" to="/wallet/activity">活动</RouterLink>
         <RouterLink class="button button--ghost" to="/settings">设置</RouterLink>
@@ -304,6 +305,9 @@ watch([pendingActivities, allNetworks], () => {
         <template #header>
           <div class="section-card__actions">
             <span class="section-card__meta">{{ assetSummaryLabel }}</span>
+            <RouterLink class="button button--ghost button--small" :to="{ name: 'wallet-send', query: { scan: '1' } }">
+              扫码
+            </RouterLink>
             <RouterLink class="button button--ghost button--small" to="/wallet/token/add">
               添加
             </RouterLink>

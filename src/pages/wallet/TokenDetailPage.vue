@@ -284,6 +284,13 @@ async function openExternal(url: string | null) {
       >
         发送 {{ asset.symbol }}
       </RouterLink>
+      <RouterLink
+        v-if="asset"
+        class="button button--secondary"
+        :to="{ name: 'wallet-send', query: { asset: asset.id, scan: '1' } }"
+      >
+        扫码付款
+      </RouterLink>
       <RouterLink class="button button--secondary" to="/wallet/receive">收款</RouterLink>
       <button class="button button--ghost" type="button" @click="refreshTokenContext">刷新</button>
     </template>
@@ -466,6 +473,9 @@ async function openExternal(url: string | null) {
         <div class="card-stack">
           <RouterLink class="button button--primary" :to="{ name: 'wallet-send', query: { asset: asset.id } }">
             继续发送 {{ asset.symbol }}
+          </RouterLink>
+          <RouterLink class="button button--secondary" :to="{ name: 'wallet-send', query: { asset: asset.id, scan: '1' } }">
+            扫码付款
           </RouterLink>
           <RouterLink class="button button--secondary" to="/wallet/receive">打开收款页</RouterLink>
           <RouterLink class="button button--ghost" to="/wallet">返回资产首页</RouterLink>

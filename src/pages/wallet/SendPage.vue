@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { formatEther, formatUnits, isAddress, parseUnits } from "viem";
 import { storeToRefs } from "pinia";
 import { RouterLink, useRoute, useRouter } from "vue-router";
+import type { IScannerControls } from "@zxing/browser";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import {
@@ -10,6 +11,7 @@ import {
   describeTransferError,
   estimateTransferPreview,
   fetchPortfolioSnapshot,
+  readErc20TokenMetadata,
 } from "../../services/evm";
 import { loadWalletScopedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import {
@@ -22,8 +24,13 @@ import { useSessionStore } from "../../stores/session";
 import { useWalletStore } from "../../stores/wallet";
 import type { NetworkConfig } from "../../types/network";
 import type { TransferErrorFeedback, TransferPreview } from "../../types/portfolio";
-import type { WalletAddress, WalletHex } from "../../types/wallet";
+import type { TrackedToken, WalletAddress, WalletHex } from "../../types/wallet";
 import { formatTokenAmount, shortenAddress } from "../../utils/format";
+import {
+  formatRawEvmAmount,
+  parseEvmPaymentRequest,
+  type ParsedEvmPaymentRequest,
+} from "../../utils/receive";
 import { getRestrictedAddressReason } from "../../utils/runtimeSafety";
 
 const route = useRoute();
@@ -47,7 +54,8 @@ const isEstimating = ref(false);
 const isBroadcasting = ref(false);
 const isRefreshingBalance = ref(false);
 const isFillingMax = ref(false);
-const pasteFeedback = ref<null | {
+const paymentRequestText = ref("");
+const paymentRequestFeedback = ref<null | {
   tone: "success" | "error";
   message: string;
 }>(null);
@@ -76,6 +84,24 @@ type TransferConfirmation = {
 };
 
 const confirmation = ref<TransferConfirmation | null>(null);
+const pendingTokenImport = ref<null | {
+  sourceLabel: string;
+  networkId: string;
+  networkName: string;
+  contractAddress: WalletAddress;
+  recipientAddress: WalletAddress;
+  rawAmount: string;
+  amountText: string;
+  raw: string;
+  metadata: { name: string; symbol: string; decimals: number };
+}>(null);
+const scannerVideoRef = ref<HTMLVideoElement | null>(null);
+const isScannerOpen = ref(false);
+const isScannerStarting = ref(false);
+let scannerControls: IScannerControls | null = null;
+let scannerRequestId = 0;
+let paymentFeedbackTimer: number | null = null;
+let amountFeedbackTimer: number | null = null;
 
 function buildExpiredConfirmationFeedback(): TransferErrorFeedback {
   return {
@@ -281,6 +307,15 @@ watch(activeNetwork, () => {
   }
 });
 
+watch(
+  () => route.query.scan,
+  (nextScan) => {
+    if (nextScan === "1" && !isScannerOpen.value) {
+      void startQrScanner();
+    }
+  },
+);
+
 let balanceRefreshRequestId = 0;
 let confirmationRequestId = 0;
 let fillMaxRequestId = 0;
@@ -325,8 +360,10 @@ watch([activeNetwork, primaryAddress, activeTokens], () => {
 });
 
 onBeforeUnmount(() => {
-  if (pasteFeedbackTimer) {
-    window.clearTimeout(pasteFeedbackTimer);
+  stopQrScanner();
+
+  if (paymentFeedbackTimer) {
+    window.clearTimeout(paymentFeedbackTimer);
   }
 
   if (amountFeedbackTimer) {
@@ -336,11 +373,13 @@ onBeforeUnmount(() => {
 
 onMounted(() => {
   void refreshBalanceContext();
+
+  if (route.query.scan === "1") {
+    void startQrScanner();
+  }
 });
 
 const isTauriRuntime = computed(() => shellMode.value === "tauri");
-let pasteFeedbackTimer: number | null = null;
-let amountFeedbackTimer: number | null = null;
 
 function parseAmountInput(value: string, decimals: number) {
   const normalizedValue = value.trim();
@@ -392,14 +431,14 @@ function clearSendDraft() {
   });
 }
 
-function schedulePasteFeedbackReset() {
-  if (pasteFeedbackTimer) {
-    window.clearTimeout(pasteFeedbackTimer);
+function schedulePaymentRequestFeedbackReset() {
+  if (paymentFeedbackTimer) {
+    window.clearTimeout(paymentFeedbackTimer);
   }
 
-  pasteFeedbackTimer = window.setTimeout(() => {
-    pasteFeedback.value = null;
-    pasteFeedbackTimer = null;
+  paymentFeedbackTimer = window.setTimeout(() => {
+    paymentRequestFeedback.value = null;
+    paymentFeedbackTimer = null;
   }, 2200);
 }
 
@@ -422,42 +461,408 @@ function setAmountFeedback(feedback: {
   scheduleAmountFeedbackReset();
 }
 
-async function pasteRecipientAddress() {
-  if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
-    pasteFeedback.value = {
-      tone: "error",
-      message: "当前环境不支持读取剪贴板",
-    };
-    schedulePasteFeedbackReset();
+function setPaymentRequestFeedback(
+  feedback: {
+    tone: "success" | "error";
+    message: string;
+  },
+  options: { autoReset?: boolean } = {},
+) {
+  paymentRequestFeedback.value = feedback;
+
+  if (options.autoReset ?? true) {
+    schedulePaymentRequestFeedbackReset();
+  }
+}
+
+function stopQrScanner() {
+  scannerRequestId += 1;
+  scannerControls?.stop();
+  scannerControls = null;
+  isScannerOpen.value = false;
+  isScannerStarting.value = false;
+
+  const video = scannerVideoRef.value;
+  const stream = video?.srcObject;
+
+  if (typeof MediaStream !== "undefined" && stream instanceof MediaStream) {
+    stream.getTracks().forEach((track) => track.stop());
+  }
+
+  if (video) {
+    video.srcObject = null;
+  }
+}
+
+async function startQrScanner() {
+  if (isBroadcasting.value) {
+    return;
+  }
+
+  if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+    setPaymentRequestFeedback(
+      {
+        tone: "error",
+        message: "当前环境不支持相机扫码，请粘贴 QR 内容解析",
+      },
+      { autoReset: false },
+    );
+    return;
+  }
+
+  if (isScannerOpen.value || scannerControls) {
+    stopQrScanner();
+  }
+
+  const requestId = ++scannerRequestId;
+  let hasHandledResult = false;
+  isScannerOpen.value = true;
+  isScannerStarting.value = true;
+  paymentRequestFeedback.value = null;
+
+  await nextTick();
+
+  const video = scannerVideoRef.value;
+  if (!video) {
+    if (requestId === scannerRequestId) {
+      setPaymentRequestFeedback(
+        {
+          tone: "error",
+          message: "扫码预览未准备好，请重试",
+        },
+        { autoReset: false },
+      );
+      isScannerOpen.value = false;
+      isScannerStarting.value = false;
+    }
     return;
   }
 
   try {
-    const clipboardText = (await navigator.clipboard.readText()).trim();
+    const { BrowserQRCodeReader } = await import("@zxing/browser");
+    const reader = new BrowserQRCodeReader(undefined, {
+      delayBetweenScanAttempts: 150,
+    });
+    const controls = await reader.decodeFromConstraints(
+      {
+        audio: false,
+        video: {
+          facingMode: {
+            ideal: "environment",
+          },
+        },
+      },
+      video,
+      (result) => {
+        if (!result || hasHandledResult || requestId !== scannerRequestId) {
+          return;
+        }
 
-    if (!isAddress(clipboardText)) {
-      throw new Error("剪贴板内容不是合法的 EVM 地址");
+        hasHandledResult = true;
+        void handleDecodedQrPayload(result.getText(), requestId);
+      },
+    );
+
+    if (requestId !== scannerRequestId) {
+      controls.stop();
+      return;
     }
 
-    const restrictedAddressReason = getRestrictedAddressReason(clipboardText);
+    scannerControls = controls;
+  } catch (error) {
+    if (requestId !== scannerRequestId) {
+      return;
+    }
+
+    setPaymentRequestFeedback(
+      {
+        tone: "error",
+        message: describeScannerError(error),
+      },
+      { autoReset: false },
+    );
+    isScannerOpen.value = false;
+  } finally {
+    if (requestId === scannerRequestId) {
+      isScannerStarting.value = false;
+    }
+  }
+}
+
+async function handleDecodedQrPayload(payload: string, requestId: number) {
+  const didApply = await applyPaymentRequestPayload(payload, "扫码");
+
+  if (requestId === scannerRequestId) {
+    if (!didApply) {
+      paymentRequestText.value = payload.trim();
+    }
+
+    stopQrScanner();
+  }
+}
+
+function describeScannerError(error: unknown) {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    if (error.name === "NotAllowedError" || error.name === "PermissionDeniedError") {
+      return "相机权限被拒绝，请允许相机后重试，或粘贴 QR 内容解析";
+    }
+
+    if (error.name === "NotFoundError" || error.name === "DevicesNotFoundError") {
+      return "没有找到可用相机，请粘贴 QR 内容解析";
+    }
+
+    if (error.name === "NotReadableError" || error.name === "TrackStartError") {
+      return "相机当前不可用，可能被其他应用占用";
+    }
+  }
+
+  return error instanceof Error ? error.message : "当前无法启动相机扫码";
+}
+
+async function applyTypedPaymentRequest() {
+  await applyPaymentRequestPayload(paymentRequestText.value, "QR 内容");
+}
+
+function applyErc20TokenToForm(
+  token: TrackedToken,
+  request: Extract<ParsedEvmPaymentRequest, { type: "erc20-transfer" }>,
+  sourceLabel: string,
+  imported: boolean,
+) {
+  selectedAssetId.value = token.id;
+  recipientAddress.value = request.recipientAddress;
+  amount.value = formatRawEvmAmount(request.rawAmount, token.decimals);
+  paymentRequestText.value = request.raw;
+  setPaymentRequestFeedback({
+    tone: "success",
+    message: imported
+      ? `已添加 ${token.symbol} 并从${sourceLabel}回填转账`
+      : `已从${sourceLabel}回填 ${token.symbol} 转账`,
+  });
+}
+
+async function applyPaymentRequestPayload(payload: string, sourceLabel: string) {
+  let paymentRequest: ParsedEvmPaymentRequest;
+
+  pendingTokenImport.value = null;
+
+  try {
+    paymentRequest = parseEvmPaymentRequest(payload);
+  } catch (error) {
+    setPaymentRequestFeedback(
+      {
+        tone: "error",
+        message: error instanceof Error ? error.message : "无法解析二维码内容",
+      },
+      { autoReset: false },
+    );
+    return false;
+  }
+
+  try {
+    if (paymentRequest.chainId) {
+      const matchedNetwork =
+        networksStore.allNetworks.find((network) => network.chainId === paymentRequest.chainId) ?? null;
+
+      if (!matchedNetwork) {
+        throw new Error(`当前钱包未配置 Chain ID ${paymentRequest.chainId} 的网络`);
+      }
+
+      if (matchedNetwork.id !== activeNetwork.value.id) {
+        networksStore.setActiveNetwork(matchedNetwork.id);
+        await nextTick();
+      }
+    }
+
+    const restrictedAddressReason = getRestrictedAddressReason(paymentRequest.recipientAddress);
 
     if (restrictedAddressReason) {
       throw new Error(restrictedAddressReason);
     }
 
-    recipientAddress.value = clipboardText;
-    pasteFeedback.value = {
-      tone: "success",
-      message: "已从剪贴板回填收款地址",
+    if (paymentRequest.type === "native") {
+      selectedAssetId.value = "native";
+      recipientAddress.value = paymentRequest.recipientAddress;
+
+      if (paymentRequest.rawAmount) {
+        amount.value = formatRawEvmAmount(paymentRequest.rawAmount, 18);
+      }
+
+      paymentRequestText.value = paymentRequest.raw;
+      setPaymentRequestFeedback({
+        tone: "success",
+        message: `已从${sourceLabel}回填 ${activeNetwork.value.symbol} 转账`,
+      });
+      return true;
+    }
+
+    const matchedToken =
+      walletStore
+        .tokensForNetwork(activeNetwork.value.id)
+        .find(
+          (token) =>
+            token.contractAddress.toLowerCase() === paymentRequest.contractAddress.toLowerCase(),
+        ) ?? null;
+
+    if (matchedToken) {
+      applyErc20TokenToForm(matchedToken, paymentRequest, sourceLabel, false);
+      return true;
+    }
+
+    // 二维码里的 ERC20 还没添加：先按链上 name/symbol/decimals 读出元数据，
+    // 交给用户确认后再添加并回填——添加 Token 必须用户确认，不静默写入。
+    let metadata;
+    try {
+      metadata = await readErc20TokenMetadata({
+        network: activeNetwork.value,
+        contractAddress: paymentRequest.contractAddress,
+        trackedTokens: walletStore.tokensForNetwork(activeNetwork.value.id),
+      });
+    } catch (error) {
+      throw new Error(
+        `无法读取二维码里的 ERC20 合约 ${shortenAddress(paymentRequest.contractAddress)} 元数据${
+          error instanceof Error ? `：${error.message}` : ""
+        }`,
+      );
+    }
+
+    pendingTokenImport.value = {
+      sourceLabel,
+      networkId: activeNetwork.value.id,
+      networkName: activeNetwork.value.name,
+      contractAddress: paymentRequest.contractAddress,
+      recipientAddress: paymentRequest.recipientAddress,
+      rawAmount: paymentRequest.rawAmount,
+      amountText: formatRawEvmAmount(paymentRequest.rawAmount, metadata.decimals),
+      raw: paymentRequest.raw,
+      metadata,
     };
+    paymentRequestText.value = paymentRequest.raw;
+    setPaymentRequestFeedback(
+      {
+        tone: "success",
+        message: `二维码里的 ${metadata.symbol} 还没添加，确认后再回填转账`,
+      },
+      { autoReset: false },
+    );
+    return true;
   } catch (error) {
-    pasteFeedback.value = {
-      tone: "error",
-      message: error instanceof Error ? error.message : "当前无法读取剪贴板地址",
-    };
+    setPaymentRequestFeedback(
+      {
+        tone: "error",
+        message: error instanceof Error ? error.message : "二维码内容无法用于当前发送页",
+      },
+      { autoReset: false },
+    );
+    return false;
+  }
+}
+
+function confirmPendingTokenImport() {
+  const pending = pendingTokenImport.value;
+
+  if (!pending) {
+    return;
   }
 
-  schedulePasteFeedbackReset();
+  if (activeNetwork.value.id !== pending.networkId) {
+    pendingTokenImport.value = null;
+    setPaymentRequestFeedback(
+      {
+        tone: "error",
+        message: "当前网络已经变化，请重新扫码后再添加 Token",
+      },
+      { autoReset: false },
+    );
+    return;
+  }
+
+  let token =
+    walletStore
+      .tokensForNetwork(pending.networkId)
+      .find(
+        (entry) => entry.contractAddress.toLowerCase() === pending.contractAddress.toLowerCase(),
+      ) ?? null;
+  let imported = false;
+
+  if (!token) {
+    const addTokenResult = walletStore.addCustomToken({
+      networkId: pending.networkId,
+      name: pending.metadata.name,
+      symbol: pending.metadata.symbol,
+      decimals: String(pending.metadata.decimals),
+      contractAddress: pending.contractAddress,
+    });
+
+    if (!addTokenResult.ok) {
+      setPaymentRequestFeedback(
+        {
+          tone: "error",
+          message:
+            addTokenResult.errors[0] ??
+            `无法添加二维码里的 ERC20 合约 ${shortenAddress(pending.contractAddress)}`,
+        },
+        { autoReset: false },
+      );
+      return;
+    }
+
+    token = addTokenResult.token;
+    imported = true;
+  }
+
+  pendingTokenImport.value = null;
+
+  try {
+    applyErc20TokenToForm(
+      token,
+      {
+        type: "erc20-transfer",
+        contractAddress: pending.contractAddress,
+        recipientAddress: pending.recipientAddress,
+        rawAmount: pending.rawAmount,
+        raw: pending.raw,
+      },
+      pending.sourceLabel,
+      imported,
+    );
+  } catch (error) {
+    setPaymentRequestFeedback(
+      {
+        tone: "error",
+        message: error instanceof Error ? error.message : "无法用二维码里的金额回填",
+      },
+      { autoReset: false },
+    );
+  }
+}
+
+function cancelPendingTokenImport() {
+  pendingTokenImport.value = null;
+  setPaymentRequestFeedback({
+    tone: "error",
+    message: "已取消添加二维码里的 Token",
+  });
+}
+
+async function pasteRecipientAddress() {
+  if (typeof navigator === "undefined" || !navigator.clipboard?.readText) {
+    setPaymentRequestFeedback({
+      tone: "error",
+      message: "当前环境不支持读取剪贴板",
+    });
+    return;
+  }
+
+  try {
+    const clipboardText = (await navigator.clipboard.readText()).trim();
+    await applyPaymentRequestPayload(clipboardText, "剪贴板");
+  } catch (error) {
+    setPaymentRequestFeedback({
+      tone: "error",
+      message: error instanceof Error ? error.message : "当前无法读取剪贴板内容",
+    });
+  }
 }
 
 async function refreshBalanceContext() {
@@ -1043,23 +1448,117 @@ async function signAndBroadcast() {
 
           <div class="form-actions form-actions--compact">
             <button
+              class="button button--secondary button--small"
+              type="button"
+              :disabled="isBroadcasting || isScannerStarting"
+              @click="startQrScanner"
+            >
+              {{ isScannerStarting ? "打开相机..." : "扫码付款" }}
+            </button>
+            <button
               class="button button--ghost button--small"
               type="button"
               :disabled="isBroadcasting"
               @click="pasteRecipientAddress"
             >
-              粘贴地址
+              粘贴地址/QR
             </button>
             <span
-              v-if="pasteFeedback"
+              v-if="paymentRequestFeedback"
               :class="[
                 'helper-text',
-                pasteFeedback.tone === 'error' ? 'helper-text--error' : 'helper-text--success',
+                paymentRequestFeedback.tone === 'error' ? 'helper-text--error' : 'helper-text--success',
               ]"
             >
-              {{ pasteFeedback.message }}
+              {{ paymentRequestFeedback.message }}
             </span>
           </div>
+
+          <section v-if="isScannerOpen" class="qr-scan-panel">
+            <video
+              ref="scannerVideoRef"
+              autoplay
+              class="qr-scan-panel__video"
+              muted
+              playsinline
+            ></video>
+            <div class="form-actions form-actions--compact">
+              <button class="button button--ghost button--small" type="button" @click="stopQrScanner">
+                取消扫码
+              </button>
+            </div>
+          </section>
+
+          <label class="field">
+            <span>扫码内容</span>
+            <textarea
+              v-model="paymentRequestText"
+              :disabled="isBroadcasting"
+              placeholder="ethereum:0x... 或 0x..."
+              rows="3"
+            ></textarea>
+          </label>
+
+          <div class="form-actions form-actions--compact">
+            <button
+              class="button button--ghost button--small"
+              type="button"
+              :disabled="isBroadcasting || !paymentRequestText.trim()"
+              @click="applyTypedPaymentRequest"
+            >
+              解析扫码内容
+            </button>
+          </div>
+
+          <section v-if="pendingTokenImport" class="card-stack qr-token-confirm">
+            <p class="helper-text">
+              二维码里的 ERC20 还没有添加到 {{ pendingTokenImport.networkName }}，确认后才会添加 Token 并回填这笔转账。
+            </p>
+            <div class="key-value-list">
+              <div class="key-value-row">
+                <span>网络</span>
+                <strong>{{ pendingTokenImport.networkName }}</strong>
+              </div>
+              <div class="key-value-row">
+                <span>Token</span>
+                <strong>{{ pendingTokenImport.metadata.symbol }} · {{ pendingTokenImport.metadata.name }}</strong>
+              </div>
+              <div class="key-value-row">
+                <span>合约</span>
+                <strong>{{ pendingTokenImport.contractAddress }}</strong>
+              </div>
+              <div class="key-value-row">
+                <span>Decimals</span>
+                <strong>{{ pendingTokenImport.metadata.decimals }}</strong>
+              </div>
+              <div class="key-value-row">
+                <span>收款地址</span>
+                <strong>{{ pendingTokenImport.recipientAddress }}</strong>
+              </div>
+              <div class="key-value-row">
+                <span>数量</span>
+                <strong>{{ pendingTokenImport.amountText }} {{ pendingTokenImport.metadata.symbol }}</strong>
+              </div>
+            </div>
+            <div class="form-actions form-actions--compact">
+              <button
+                class="button button--primary button--small"
+                type="button"
+                :disabled="isBroadcasting"
+                @click="confirmPendingTokenImport"
+              >
+                确认添加并回填
+              </button>
+              <button
+                class="button button--ghost button--small"
+                type="button"
+                :disabled="isBroadcasting"
+                @click="cancelPendingTokenImport"
+              >
+                取消
+              </button>
+            </div>
+          </section>
 
           <label class="field">
             <span>数量</span>

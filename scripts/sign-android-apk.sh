@@ -5,6 +5,29 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# Ensure the Android build-tools (zipalign, apksigner) are reachable on PATH.
+# These live under $ANDROID_HOME/build-tools/<version>/ and are not always
+# exported by the user's shell, so resolve the newest version here.
+ensure_build_tools_on_path() {
+  if command -v zipalign >/dev/null 2>&1 && command -v apksigner >/dev/null 2>&1; then
+    return 0
+  fi
+
+  local sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+  [[ -n "$sdk_root" && -d "$sdk_root/build-tools" ]] || return 0
+
+  local latest_build_tools
+  latest_build_tools="$(find "$sdk_root/build-tools" -mindepth 1 -maxdepth 1 -type d \
+    | sort -V | tail -n 1)"
+
+  if [[ -n "$latest_build_tools" && -x "$latest_build_tools/zipalign" ]]; then
+    PATH="$latest_build_tools:$PATH"
+    export PATH
+  fi
+}
+
+ensure_build_tools_on_path
+
 DEFAULT_INPUT_APK="$PROJECT_ROOT/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk"
 
 INPUT_APK="${ANDROID_UNSIGNED_APK_PATH:-$DEFAULT_INPUT_APK}"
@@ -127,12 +150,11 @@ if [[ -z "$KEY_PASSWORD" ]]; then
   fi
 fi
 
+# Default the key password to the keystore password. PKCS12 keystores normally
+# use the same secret for both, so we only ever prompt once. Override with
+# ANDROID_KEY_PASSWORD / ANDROID_KEY_PASSWORD_FILE if they genuinely differ.
 if [[ -z "$KEY_PASSWORD" ]]; then
-  read -r -s -p "Key password (press Enter to reuse keystore password): " KEY_PASSWORD
-  printf '\n'
-  if [[ -z "$KEY_PASSWORD" ]]; then
-    KEY_PASSWORD="$STORE_PASSWORD"
-  fi
+  KEY_PASSWORD="$STORE_PASSWORD"
 fi
 
 if [[ -z "$OUTPUT_APK" ]]; then

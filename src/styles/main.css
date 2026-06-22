@@ -918,7 +918,8 @@ h1 {
 }
 
 .status-grid {
-  gap: 10px;
+  gap: 14px;
+  margin-bottom: 12px;
 }
 
 .page-grid > *,
@@ -930,7 +931,7 @@ h1 {
 }
 
 .section-card {
-  padding: 15px;
+  padding: 17px;
 }
 
 .section-card__header {
@@ -967,7 +968,7 @@ h1 {
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   flex-wrap: wrap;
 }
 
@@ -1252,6 +1253,25 @@ h1 {
   flex: 0 1 auto;
 }
 
+.qr-scan-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(23, 19, 15, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 250, 244, 0.9);
+}
+
+.qr-scan-panel__video {
+  width: 100%;
+  max-height: 320px;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  background: #17130f;
+  object-fit: cover;
+}
+
 .home-balance-card__top {
   display: flex;
   justify-content: space-between;
@@ -1262,6 +1282,8 @@ h1 {
 
 .home-balance-card {
   border: none;
+  gap: 16px;
+  padding: 18px;
   background:
     radial-gradient(circle at top right, rgba(246, 133, 27, 0.34), transparent 34%),
     linear-gradient(160deg, #18120e 0%, #2a1d13 100%);
@@ -1322,7 +1344,7 @@ h1 {
 .home-balance-card__controls {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 8px;
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -1422,7 +1444,7 @@ h1 {
 .home-quick-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .home-quick-actions .button {
@@ -1447,15 +1469,15 @@ h1 {
 .token-list {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
 .token-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 2px;
+  gap: 14px;
+  padding: 15px 4px;
   border-radius: 0;
   border: none;
   border-bottom: 1px solid var(--wallet-line);
@@ -1467,13 +1489,13 @@ h1 {
 .token-list > article.token-row:last-child,
 .token-list > a.token-row:last-child {
   border-bottom: none;
-  padding-bottom: 0;
+  padding-bottom: 4px;
 }
 
 .token-list > .token-row:first-child,
 .token-list > article.token-row:first-child,
 .token-list > a.token-row:first-child {
-  padding-top: 0;
+  padding-top: 4px;
 }
 
 .token-row__text {
@@ -1951,6 +1973,11 @@ h1 {
     font-size: 1.6rem;
   }
 
+  .home-balance-card {
+    gap: 14px;
+    padding: 16px;
+  }
+
   .home-quick-actions,
   .quick-link-grid {
     grid-template-columns: 1fr 1fr;
@@ -1992,6 +2019,8 @@ h1 {
 
   .token-row {
     align-items: flex-start;
+    padding-top: 14px;
+    padding-bottom: 14px;
   }
 
   .token-row__meta {

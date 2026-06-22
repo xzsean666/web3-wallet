@@ -84,8 +84,27 @@ function syncTheme(filePath) {
 }
 
 function syncManifest(filePath) {
-  updateFile(filePath, (source) =>
-    source.replace(/<activity\b[\s\S]*?android:name="\.MainActivity"[\s\S]*?>/u, (activityBlock) => {
+  updateFile(filePath, (source) => {
+    let next = source;
+
+    next = next
+      .replace(/\n[^\S\r\n]*<uses-permission android:name="android\.permission\.CAMERA" \/>\n?/gu, "\n")
+      .replace(
+        /(<uses-permission android:name="android\.permission\.INTERNET" \/>\n)/u,
+        '$1    <uses-permission android:name="android.permission.CAMERA" />\n',
+      )
+      .replace(/\n[^\S\r\n]*<uses-feature android:name="android\.hardware\.camera" android:required="false" \/>\n?/gu, "\n")
+      .replace(
+        /(<uses-feature android:name="android\.software\.leanback" android:required="false" \/>\n)/u,
+        '$1    <uses-feature android:name="android.hardware.camera" android:required="false" />\n',
+      )
+      .replace(
+        /\n[^\S\r\n]*<!-- AndroidTV support -->\s*\n[^\S\r\n]*(<uses-feature android:name="android\.software\.leanback")/u,
+        '\n\n    <!-- AndroidTV support -->\n    $1',
+      )
+      .replace(/\n[^\S\r\n]*<application\b/u, "\n\n    <application");
+
+    return next.replace(/<activity\b[\s\S]*?android:name="\.MainActivity"[\s\S]*?>/u, (activityBlock) => {
       if (activityBlock.includes('android:windowSoftInputMode=')) {
         return activityBlock.replace(
           /android:windowSoftInputMode="[^"]*"/u,
@@ -97,8 +116,8 @@ function syncManifest(filePath) {
         /android:exported="true"/u,
         'android:exported="true"\n            android:windowSoftInputMode="adjustResize"',
       );
-    }),
-  );
+    });
+  });
 }
 
 const mainActivityPath = walk(path.join(androidRoot, "app", "src", "main", "java"));

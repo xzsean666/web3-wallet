@@ -2,6 +2,7 @@ import { defineComponent } from "vue";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getAddress } from "viem";
 import SendPage from "../wallet/SendPage.vue";
 import { clearPersistedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import { useNetworksStore } from "../../stores/networks";
@@ -14,6 +15,7 @@ const {
   estimateTransferPreviewMock,
   fetchPortfolioSnapshotMock,
   prepareTransferConfirmationMock,
+  readErc20TokenMetadataMock,
   routeQueryMock,
   routerPushMock,
   signTransferTransactionMock,
@@ -29,6 +31,7 @@ const {
   estimateTransferPreviewMock: vi.fn(),
   fetchPortfolioSnapshotMock: vi.fn(),
   prepareTransferConfirmationMock: vi.fn(),
+  readErc20TokenMetadataMock: vi.fn(),
   routeQueryMock: {} as Record<string, string>,
   routerPushMock: vi.fn(),
   signTransferTransactionMock: vi.fn(),
@@ -39,6 +42,7 @@ vi.mock("../../services/evm", () => ({
   describeTransferError: describeTransferErrorMock,
   estimateTransferPreview: estimateTransferPreviewMock,
   fetchPortfolioSnapshot: fetchPortfolioSnapshotMock,
+  readErc20TokenMetadata: readErc20TokenMetadataMock,
 }));
 
 vi.mock("../../services/walletBridge", () => ({
@@ -142,11 +146,16 @@ describe("SendPage", () => {
     clearPersistedUiState();
     window.localStorage.clear();
     window.sessionStorage.clear();
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: undefined,
+    });
     broadcastSignedTransactionMock.mockReset();
     describeTransferErrorMock.mockClear();
     estimateTransferPreviewMock.mockReset();
     fetchPortfolioSnapshotMock.mockReset();
     prepareTransferConfirmationMock.mockReset();
+    readErc20TokenMetadataMock.mockReset();
     Object.keys(routeQueryMock).forEach((key) => delete routeQueryMock[key]);
     routerPushMock.mockReset();
     signTransferTransactionMock.mockReset();
@@ -179,6 +188,181 @@ describe("SendPage", () => {
       "0x2222222222222222222222222222222222222222",
     );
     expect((wrapper.get('input[placeholder="0.00"]').element as HTMLInputElement).value).toBe("2.5");
+  });
+
+  it("fills an ERC20 transfer from a pasted EIP-681 QR payload", async () => {
+    const { networksStore, walletStore } = bootstrapSendSession();
+    const tokenAddress = "0xebe1af878adc36994cebe5f8fd3bf772661e3d14";
+    const recipientAddress = "0x18be3bc1fa455fcc19db8fa0bbacf178d8aa884f";
+    const addTokenResult = walletStore.addCustomToken({
+      networkId: "polygon-amoy",
+      name: "Payment Token",
+      symbol: "PAY",
+      decimals: "18",
+      contractAddress: tokenAddress,
+    });
+
+    expect(addTokenResult.ok).toBe(true);
+    const tokenId = addTokenResult.ok ? addTokenResult.token.id : "";
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn().mockResolvedValue(
+          `ethereum:${tokenAddress}@80002/transfer?address=${recipientAddress}&uint256=1000000000000000000`,
+        ),
+      },
+    });
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await findButtonByText(wrapper, "粘贴地址/QR")!.trigger("click");
+    await flushPromises();
+
+    expect(networksStore.activeNetworkId).toBe("polygon-amoy");
+    expect((wrapper.get("select").element as HTMLSelectElement).value).toBe(tokenId);
+    expect((wrapper.get('input[placeholder="0x..."]').element as HTMLInputElement).value).toBe(
+      getAddress(recipientAddress),
+    );
+    expect((wrapper.get('input[placeholder="0.00"]').element as HTMLInputElement).value).toBe("1");
+    expect(wrapper.text()).toContain("已从剪贴板回填 PAY 转账");
+  });
+
+  it("switches network and imports an untracked ERC20 only after explicit confirmation", async () => {
+    const { networksStore, walletStore } = bootstrapSendSession();
+    const tokenAddress = "0xebe1af878adc36994cebe5f8fd3bf772661e3d14";
+    const recipientAddress = "0x18be3bc1fa455fcc19db8fa0bbacf178d8aa884f";
+
+    expect(walletStore.tokensForNetwork("polygon-amoy")).toHaveLength(0);
+    readErc20TokenMetadataMock.mockResolvedValue({
+      name: "Payment Token",
+      symbol: "PAY",
+      decimals: 18,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn().mockResolvedValue(
+          `ethereum:${tokenAddress}@80002/transfer?address=${recipientAddress}&uint256=1000000000000000000`,
+        ),
+      },
+    });
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await findButtonByText(wrapper, "粘贴地址/QR")!.trigger("click");
+    await flushPromises();
+
+    // Network is switched automatically, but the token must not be added yet —
+    // the user has to confirm first.
+    expect(readErc20TokenMetadataMock).toHaveBeenCalledTimes(1);
+    expect(networksStore.activeNetworkId).toBe("polygon-amoy");
+    expect(walletStore.tokensForNetwork("polygon-amoy")).toHaveLength(0);
+    expect(wrapper.text()).toContain("还没添加，确认后再回填转账");
+
+    await findButtonByText(wrapper, "确认添加并回填")!.trigger("click");
+    await flushPromises();
+
+    const importedTokens = walletStore.tokensForNetwork("polygon-amoy");
+    expect(importedTokens).toHaveLength(1);
+    expect(importedTokens[0].contractAddress.toLowerCase()).toBe(tokenAddress);
+
+    expect((wrapper.get("select").element as HTMLSelectElement).value).toBe(importedTokens[0].id);
+    expect((wrapper.get('input[placeholder="0x..."]').element as HTMLInputElement).value).toBe(
+      getAddress(recipientAddress),
+    );
+    expect((wrapper.get('input[placeholder="0.00"]').element as HTMLInputElement).value).toBe("1");
+    expect(wrapper.text()).toContain("已添加 PAY 并从剪贴板回填转账");
+  });
+
+  it("does not import the ERC20 when the confirmation is cancelled", async () => {
+    const { networksStore, walletStore } = bootstrapSendSession();
+    const tokenAddress = "0xebe1af878adc36994cebe5f8fd3bf772661e3d14";
+    const recipientAddress = "0x18be3bc1fa455fcc19db8fa0bbacf178d8aa884f";
+
+    readErc20TokenMetadataMock.mockResolvedValue({
+      name: "Payment Token",
+      symbol: "PAY",
+      decimals: 18,
+    });
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn().mockResolvedValue(
+          `ethereum:${tokenAddress}@80002/transfer?address=${recipientAddress}&uint256=1000000000000000000`,
+        ),
+      },
+    });
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await findButtonByText(wrapper, "粘贴地址/QR")!.trigger("click");
+    await flushPromises();
+
+    // Network still switches (the user asked for that), but cancelling leaves no token behind.
+    expect(networksStore.activeNetworkId).toBe("polygon-amoy");
+    await findButtonByText(wrapper, "取消")!.trigger("click");
+    await flushPromises();
+
+    expect(walletStore.tokensForNetwork("polygon-amoy")).toHaveLength(0);
+    expect((wrapper.get('input[placeholder="0x..."]').element as HTMLInputElement).value).toBe("");
+    expect(wrapper.text()).toContain("已取消添加二维码里的 Token");
+  });
+
+  it("surfaces a readable error when an untracked ERC20 QR has no on-chain metadata", async () => {
+    const { walletStore } = bootstrapSendSession();
+    const tokenAddress = "0xebe1af878adc36994cebe5f8fd3bf772661e3d14";
+    const recipientAddress = "0x18be3bc1fa455fcc19db8fa0bbacf178d8aa884f";
+
+    readErc20TokenMetadataMock.mockRejectedValue(new Error("当前合约没有返回可用的 ERC20 元数据"));
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        readText: vi.fn().mockResolvedValue(
+          `ethereum:${tokenAddress}@80002/transfer?address=${recipientAddress}&uint256=1000000000000000000`,
+        ),
+      },
+    });
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await findButtonByText(wrapper, "粘贴地址/QR")!.trigger("click");
+    await flushPromises();
+
+    expect(walletStore.tokensForNetwork("polygon-amoy")).toHaveLength(0);
+    expect(wrapper.text()).toContain("无法读取二维码里的 ERC20 合约");
+    expect(wrapper.text()).toContain("当前合约没有返回可用的 ERC20 元数据");
   });
 
   it("aborts broadcasting when the network changes after signing starts", async () => {

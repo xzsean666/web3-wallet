@@ -204,6 +204,7 @@ describe("WalletHomePage", () => {
 
     await flushPromises();
 
+    expect(wrapper.text()).toContain("扫码付款");
     expect(wrapper.find(".home-testnet-banner").text()).toContain("测试网");
     expect(wrapper.find(".home-testnet-banner").text()).toContain("请勿当作正式网余额");
 

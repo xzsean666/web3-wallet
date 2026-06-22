@@ -110,12 +110,11 @@ if [[ -z "$KEY_PASSWORD" ]]; then
   fi
 fi
 
+# Default the key password to the keystore password. PKCS12 keystores normally
+# use the same secret for both, so we only ever prompt once. Override with
+# ANDROID_KEY_PASSWORD / ANDROID_KEY_PASSWORD_FILE if they genuinely differ.
 if [[ -z "$KEY_PASSWORD" ]]; then
-  read -r -s -p "Key password (press Enter to reuse keystore password): " KEY_PASSWORD
-  printf '\n'
-  if [[ -z "$KEY_PASSWORD" ]]; then
-    KEY_PASSWORD="$STORE_PASSWORD"
-  fi
+  KEY_PASSWORD="$STORE_PASSWORD"
 fi
 
 mkdir -p "$(dirname "$KEYSTORE_PATH")"
