@@ -277,7 +277,7 @@ fi
 # 5. Ensure Android project is initialized
 if [[ ! -d "$PROJECT_ROOT/src-tauri/gen/android" ]]; then
   printf 'Initializing Android Tauri project...\n'
-  (cd "$PROJECT_ROOT" && pnpm tauri android init)
+  (cd "$PROJECT_ROOT" && pnpm tauri android init --ci)
 fi
 
 # 6. Build APK

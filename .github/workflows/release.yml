@@ -119,22 +119,23 @@ jobs:
 
       - name: Setup Android NDK and SDK build-tools
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          echo "ANDROID_HOME=$SDK_DIR" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> $GITHUB_ENV
 
           # Locate or install NDK
-          if [ -d "$ANDROID_HOME/ndk" ] && [ -n "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
-            LATEST_NDK=$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          if [ -d "$SDK_DIR/ndk" ] && [ -n "$(ls -A "$SDK_DIR/ndk" 2>/dev/null)" ]; then
+            LATEST_NDK=$(find "$SDK_DIR/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           else
             echo "Installing Android NDK via sdkmanager..."
-            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264"
-            LATEST_NDK="$ANDROID_HOME/ndk/26.3.11579264"
+            yes | "$SDK_DIR/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264"
+            LATEST_NDK="$SDK_DIR/ndk/26.3.11579264"
           fi
           echo "NDK_HOME=$LATEST_NDK" >> $GITHUB_ENV
           echo "Using NDK: $LATEST_NDK"
 
           # Add build-tools (zipalign, apksigner) to PATH
-          LATEST_BT=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          LATEST_BT=$(find "$SDK_DIR/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
           echo "$LATEST_BT" >> $GITHUB_PATH
           echo "Using Build-Tools: $LATEST_BT"
 
