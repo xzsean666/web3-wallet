@@ -5,6 +5,13 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$SCRIPT_DIR"
 
+# Automatically load .env if present
+if [[ -f "$PROJECT_ROOT/.env" ]]; then
+  set -a
+  . "$PROJECT_ROOT/.env"
+  set +a
+fi
+
 DEFAULT_KEYSTORE_PATH="$PROJECT_ROOT/.local/android-upload.keystore"
 DEFAULT_KEY_ALIAS="upload"
 DEFAULT_RELEASE_DIR="$PROJECT_ROOT/release"
@@ -13,14 +20,18 @@ APK_OUTPUT_DIR="$PROJECT_ROOT/src-tauri/gen/android/app/build/outputs/apk"
 TAURI_CONFIG_PATH="$PROJECT_ROOT/src-tauri/tauri.conf.json"
 PACKAGE_JSON_PATH="$PROJECT_ROOT/package.json"
 
-KEYSTORE_PATH="${ANDROID_KEYSTORE_PATH:-$DEFAULT_KEYSTORE_PATH}"
-KEY_ALIAS="${ANDROID_KEY_ALIAS:-$DEFAULT_KEY_ALIAS}"
-RELEASE_DIR="${ANDROID_RELEASE_DIR:-$DEFAULT_RELEASE_DIR}"
+# Credentials and build flags from environment
+KEYSTORE_BASE64="${ANDROID_KEYSTORE_BASE64:-${KEYSTORE_BASE64:-${SIGNING_KEY:-}}}"
+KEYSTORE_PATH="${ANDROID_KEYSTORE_PATH:-${KEYSTORE_PATH:-}}"
+KEY_ALIAS="${ANDROID_KEY_ALIAS:-${KEY_ALIAS:-$DEFAULT_KEY_ALIAS}}"
+RELEASE_DIR="${ANDROID_RELEASE_DIR:-${RELEASE_DIR:-$DEFAULT_RELEASE_DIR}}"
 BUILD_TARGET="${ANDROID_BUILD_TARGET:-$DEFAULT_BUILD_TARGET}"
 AUTO_VERSION_BUMP="${ANDROID_AUTO_VERSION_BUMP:-1}"
+BUMP_TYPE="${ANDROID_BUMP_TYPE:-patch}"
+EXPLICIT_VERSION="${ANDROID_VERSION:-}"
 ALLOW_NEW_KEYSTORE="${ALLOW_NEW_KEYSTORE:-0}"
-STORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-}"
-KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-}"
+STORE_PASSWORD="${ANDROID_KEYSTORE_PASSWORD:-${KEYSTORE_PASSWORD:-${STORE_PASSWORD:-}}}"
+KEY_PASSWORD="${ANDROID_KEY_PASSWORD:-${KEY_PASSWORD:-}}"
 STORE_PASSWORD_FILE="${ANDROID_KEYSTORE_PASSWORD_FILE:-}"
 KEY_PASSWORD_FILE="${ANDROID_KEY_PASSWORD_FILE:-}"
 CREATE_KEYSTORE=0
@@ -31,24 +42,31 @@ Usage:
   ./build_apk [options]
 
 Options:
-  --target TARGET       Android build target, default: aarch64
-  --universal           Build all ABIs into a universal APK
-  --no-version-bump     Keep the current app version instead of incrementing it
-  --create-keystore     Allow minting a new release keystore when none exists
-  --release-dir PATH    Directory to copy the final APK into
-  --help                Show this help
+  --target TARGET           Android build target (e.g. aarch64, armv7, x86_64, i686; default: aarch64)
+  --universal               Build all ABIs into a universal APK
+  --bump TYPE               Version bump type: patch (default), minor, major
+  --version VER             Explicitly set app version (e.g. 0.2.0)
+  --no-version-bump         Keep the current app version instead of incrementing it
+  --keystore PATH           Path to release keystore file
+  --alias NAME              Key alias (default: upload)
+  --store-password PASS     Keystore password
+  --key-password PASS       Key password (defaults to keystore password)
+  --create-keystore         Allow minting a new release keystore when none exists
+  --release-dir PATH        Directory to copy the final APK into (default: ./release)
+  --help|-h                 Show this help
 
 Environment variables:
-  ANDROID_KEYSTORE_PATH
-  ANDROID_KEY_ALIAS
-  ANDROID_KEYSTORE_PASSWORD
-  ANDROID_KEY_PASSWORD
-  ANDROID_KEYSTORE_PASSWORD_FILE
-  ANDROID_KEY_PASSWORD_FILE
-  ANDROID_RELEASE_DIR
-  ANDROID_BUILD_TARGET
-  ANDROID_AUTO_VERSION_BUMP
-  ALLOW_NEW_KEYSTORE
+  ANDROID_KEYSTORE_BASE64   Base64-encoded keystore file content (highest priority for CI/env)
+  ANDROID_KEYSTORE_PATH     Path to keystore file
+  ANDROID_KEY_ALIAS         Key alias (default: upload)
+  ANDROID_KEYSTORE_PASSWORD Keystore password
+  ANDROID_KEY_PASSWORD      Key password (defaults to keystore password)
+  ANDROID_RELEASE_DIR       Output release directory
+  ANDROID_BUILD_TARGET      Build target (default: aarch64)
+  ANDROID_AUTO_VERSION_BUMP Set to 0 to disable automatic version incrementing
+  ANDROID_BUMP_TYPE         Bump type: patch, minor, major (default: patch)
+  ANDROID_VERSION           Explicit version to set
+  ALLOW_NEW_KEYSTORE        Allow minting a new keystore if none exists
 EOF
 }
 
@@ -65,6 +83,18 @@ is_truthy() {
   esac
 }
 
+is_non_interactive() {
+  [[ ! -t 0 ]] || [[ -n "${CI:-}" ]] || [[ -n "${GITHUB_ACTIONS:-}" ]]
+}
+
+decode_base64() {
+  if base64 --decode </dev/null >/dev/null 2>&1; then
+    base64 --decode
+  else
+    base64 -d
+  fi
+}
+
 read_secret_from_file() {
   local file_path="$1"
   [[ -f "$file_path" ]] || {
@@ -73,56 +103,6 @@ read_secret_from_file() {
   }
   IFS= read -r secret < "$file_path" || true
   printf '%s' "$secret"
-}
-
-read_app_version() {
-  node -e 'const fs=require("fs"); const cfg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((cfg.version || "0.0.0").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$TAURI_CONFIG_PATH"
-}
-
-bump_app_version() {
-  node - "$TAURI_CONFIG_PATH" "$PACKAGE_JSON_PATH" <<'NODE'
-const fs = require('fs');
-
-const [tauriConfigPath, packageJsonPath] = process.argv.slice(2);
-
-function readJson(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
-function writeJson(filePath, data) {
-  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`);
-}
-
-function bumpTrailingNumber(version) {
-  const match = String(version).match(/^(.*?)(\d+)$/);
-  if (!match) {
-    throw new Error(`Version must end with a number: ${version}`);
-  }
-
-  const [, prefix, numericSuffix] = match;
-  const nextSuffix = (BigInt(numericSuffix) + 1n).toString();
-  const paddedNextSuffix = numericSuffix.startsWith('0')
-    ? nextSuffix.padStart(numericSuffix.length, '0')
-    : nextSuffix;
-
-  return `${prefix}${paddedNextSuffix}`;
-}
-
-const tauriConfig = readJson(tauriConfigPath);
-const nextVersion = bumpTrailingNumber(tauriConfig.version || '0.0.0');
-tauriConfig.version = nextVersion;
-writeJson(tauriConfigPath, tauriConfig);
-
-if (fs.existsSync(packageJsonPath)) {
-  const packageJson = readJson(packageJsonPath);
-  if (typeof packageJson.version === 'string') {
-    packageJson.version = nextVersion;
-    writeJson(packageJsonPath, packageJson);
-  }
-}
-
-console.log(nextVersion);
-NODE
 }
 
 while [[ $# -gt 0 ]]; do
@@ -135,9 +115,35 @@ while [[ $# -gt 0 ]]; do
       BUILD_TARGET=""
       shift
       ;;
+    --bump)
+      BUMP_TYPE="$2"
+      AUTO_VERSION_BUMP=1
+      shift 2
+      ;;
+    --version)
+      EXPLICIT_VERSION="$2"
+      AUTO_VERSION_BUMP=1
+      shift 2
+      ;;
     --no-version-bump)
       AUTO_VERSION_BUMP=0
       shift
+      ;;
+    --keystore)
+      KEYSTORE_PATH="$2"
+      shift 2
+      ;;
+    --alias)
+      KEY_ALIAS="$2"
+      shift 2
+      ;;
+    --store-password)
+      STORE_PASSWORD="$2"
+      shift 2
+      ;;
+    --key-password)
+      KEY_PASSWORD="$2"
+      shift 2
       ;;
     --create-keystore)
       CREATE_KEYSTORE=1
@@ -169,42 +175,65 @@ if ! command -v pnpm >/dev/null 2>&1; then
   exit 1
 fi
 
-if [[ ! -f "$KEYSTORE_PATH" && $CREATE_KEYSTORE -eq 0 ]] && ! is_truthy "$ALLOW_NEW_KEYSTORE"; then
-  printf 'Keystore not found: %s\n' "$KEYSTORE_PATH" >&2
-  printf 'Refusing to mint a new release keystore implicitly.\n' >&2
-  printf 'Run `pnpm android:keystore` first, or pass `--create-keystore` / `ALLOW_NEW_KEYSTORE=1` if you intentionally want a new signing identity.\n' >&2
-  exit 1
-fi
-
-if [[ -z "$STORE_PASSWORD" ]]; then
-  if [[ -n "$STORE_PASSWORD_FILE" ]]; then
-    STORE_PASSWORD="$(read_secret_from_file "$STORE_PASSWORD_FILE")"
-  fi
-fi
-
-if [[ -z "$STORE_PASSWORD" ]]; then
-  read -r -s -p "Keystore password: " STORE_PASSWORD
-  printf '\n'
-fi
-
-if [[ -z "$KEY_PASSWORD" ]]; then
-  if [[ -n "$KEY_PASSWORD_FILE" ]]; then
-    KEY_PASSWORD="$(read_secret_from_file "$KEY_PASSWORD_FILE")"
-  fi
-fi
-
-# Default the key password to the keystore password. PKCS12 keystores normally
-# use the same secret for both, so we only ever prompt once. Override with
-# ANDROID_KEY_PASSWORD / ANDROID_KEY_PASSWORD_FILE if they genuinely differ.
-if [[ -z "$KEY_PASSWORD" ]]; then
-  KEY_PASSWORD="$STORE_PASSWORD"
-fi
-
+# Setup secure temporary directory for credentials and clean up on exit
 TMP_SECRET_DIR="$(mktemp -d)"
 cleanup_secret_files() {
   rm -rf "$TMP_SECRET_DIR"
 }
 trap cleanup_secret_files EXIT
+
+# 1. Resolve Keystore Path from Environment or Base64
+if [[ -n "$KEYSTORE_BASE64" ]]; then
+  TMP_KEYSTORE_PATH="$TMP_SECRET_DIR/android-upload.keystore"
+  printf '%s' "$KEYSTORE_BASE64" | decode_base64 > "$TMP_KEYSTORE_PATH"
+  chmod 600 "$TMP_KEYSTORE_PATH"
+  KEYSTORE_PATH="$TMP_KEYSTORE_PATH"
+  printf 'Keystore loaded from base64 environment variable.\n'
+elif [[ -z "$KEYSTORE_PATH" ]]; then
+  if [[ -f "$DEFAULT_KEYSTORE_PATH" ]]; then
+    KEYSTORE_PATH="$DEFAULT_KEYSTORE_PATH"
+  fi
+fi
+
+# If keystore does not exist and creation is not requested, show actionable error
+if [[ ( -z "$KEYSTORE_PATH" || ! -f "$KEYSTORE_PATH" ) && $CREATE_KEYSTORE -eq 0 ]] && ! is_truthy "$ALLOW_NEW_KEYSTORE"; then
+  printf '\n\033[31m[ERROR] Android release keystore not found!\033[0m\n\n' >&2
+  printf 'You can provide the signing private key via environment variables:\n' >&2
+  printf '  1. As Base64 content (recommended for CI/CD):\n' >&2
+  printf '     export ANDROID_KEYSTORE_BASE64="$(base64 -w 0 path/to/upload.keystore)"\n' >&2
+  printf '     export ANDROID_KEYSTORE_PASSWORD="your-password"\n' >&2
+  printf '     export ANDROID_KEY_ALIAS="upload"\n\n' >&2
+  printf '  2. As a file path:\n' >&2
+  printf '     export ANDROID_KEYSTORE_PATH="/path/to/upload.keystore"\n' >&2
+  printf '     export ANDROID_KEYSTORE_PASSWORD="your-password"\n\n' >&2
+  printf '  3. Or create a new release keystore:\n' >&2
+  printf '     ./build_apk --create-keystore\n' >&2
+  printf '     (or pass ALLOW_NEW_KEYSTORE=1)\n\n' >&2
+  exit 1
+fi
+
+# 2. Resolve Passwords
+if [[ -z "$STORE_PASSWORD" && -n "$STORE_PASSWORD_FILE" ]]; then
+  STORE_PASSWORD="$(read_secret_from_file "$STORE_PASSWORD_FILE")"
+fi
+
+if [[ -z "$STORE_PASSWORD" ]]; then
+  if is_non_interactive; then
+    printf 'Error: Keystore password is required. Please set ANDROID_KEYSTORE_PASSWORD in your environment.\n' >&2
+    exit 1
+  fi
+  read -r -s -p "Keystore password: " STORE_PASSWORD
+  printf '\n'
+fi
+
+if [[ -z "$KEY_PASSWORD" && -n "$KEY_PASSWORD_FILE" ]]; then
+  KEY_PASSWORD="$(read_secret_from_file "$KEY_PASSWORD_FILE")"
+fi
+
+# Default key password to store password (PKCS12 standard)
+if [[ -z "$KEY_PASSWORD" ]]; then
+  KEY_PASSWORD="$STORE_PASSWORD"
+fi
 
 TMP_STORE_PASSWORD_FILE="$TMP_SECRET_DIR/keystore.pass"
 TMP_KEY_PASSWORD_FILE="$TMP_SECRET_DIR/key.pass"
@@ -215,8 +244,13 @@ printf '%s' "$KEY_PASSWORD" > "$TMP_KEY_PASSWORD_FILE"
 umask "$OLD_UMASK"
 unset STORE_PASSWORD KEY_PASSWORD STORE_PASSWORD_FILE KEY_PASSWORD_FILE
 
+# 3. Mint new keystore if requested and missing
 if [[ ! -f "$KEYSTORE_PATH" ]]; then
-  printf 'Keystore not found. Creating: %s\n' "$KEYSTORE_PATH"
+  if [[ -z "$KEYSTORE_PATH" ]]; then
+    KEYSTORE_PATH="$DEFAULT_KEYSTORE_PATH"
+  fi
+  mkdir -p "$(dirname "$KEYSTORE_PATH")"
+  printf 'Keystore not found. Minting new keystore: %s\n' "$KEYSTORE_PATH"
   ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH" \
   ANDROID_KEY_ALIAS="$KEY_ALIAS" \
   ANDROID_KEYSTORE_PASSWORD_FILE="$TMP_STORE_PASSWORD_FILE" \
@@ -224,14 +258,29 @@ if [[ ! -f "$KEYSTORE_PATH" ]]; then
     bash "$PROJECT_ROOT/scripts/generate-android-keystore.sh" --out "$KEYSTORE_PATH" --alias "$KEY_ALIAS"
 fi
 
+# 4. Version Bump and Resolution
+BUMP_SCRIPT="$PROJECT_ROOT/scripts/bump-version.js"
 APP_NAME="$(node -e 'const fs=require("fs"); const pkg=JSON.parse(fs.readFileSync(process.argv[1], "utf8")); console.log((pkg.name || "app").replace(/[^A-Za-z0-9._-]+/g, "-"));' "$PACKAGE_JSON_PATH")"
+
 if is_truthy "$AUTO_VERSION_BUMP"; then
-  APP_VERSION="$(bump_app_version)"
-  printf 'App version bumped to %s\n' "$APP_VERSION"
+  if [[ -n "$EXPLICIT_VERSION" ]]; then
+    APP_VERSION="$(node "$BUMP_SCRIPT" custom "$EXPLICIT_VERSION")"
+  else
+    APP_VERSION="$(node "$BUMP_SCRIPT" "$BUMP_TYPE")"
+  fi
+  printf 'App version bumped to %s (type: %s)\n' "$APP_VERSION" "${EXPLICIT_VERSION:-$BUMP_TYPE}"
 else
-  APP_VERSION="$(read_app_version)"
+  APP_VERSION="$(node "$BUMP_SCRIPT" --get)"
+  printf 'Using existing app version %s\n' "$APP_VERSION"
 fi
 
+# 5. Ensure Android project is initialized
+if [[ ! -d "$PROJECT_ROOT/src-tauri/gen/android" ]]; then
+  printf 'Initializing Android Tauri project...\n'
+  (cd "$PROJECT_ROOT" && pnpm tauri android init)
+fi
+
+# 6. Build APK
 BUILD_CMD=(pnpm tauri android build --apk)
 TARGET_LABEL="universal"
 declare -A BEFORE_BUILD_UNSIGNED_APKS=()
@@ -272,13 +321,16 @@ if [[ -n "$BUILD_TARGET" ]]; then
 fi
 printf '...\n'
 
-bash "$PROJECT_ROOT/scripts/sync-android-system-bars.sh"
+if [[ -f "$PROJECT_ROOT/scripts/sync-android-system-bars.sh" ]]; then
+  bash "$PROJECT_ROOT/scripts/sync-android-system-bars.sh"
+fi
 
 (
   cd "$PROJECT_ROOT"
   "${BUILD_CMD[@]}"
 )
 
+# 7. Locate newly created unsigned APK
 unsigned_candidates=()
 while IFS= read -r -d '' candidate_apk; do
   current_mtime="$(file_mtime_seconds "$candidate_apk")"
@@ -301,10 +353,12 @@ fi
 
 UNSIGNED_APK="${unsigned_candidates[0]}"
 
+# 8. Sign APK
 mkdir -p "$RELEASE_DIR"
 
 FINAL_APK="$RELEASE_DIR/${APP_NAME}-v${APP_VERSION}-android-${TARGET_LABEL}-release.apk"
 LATEST_APK="$RELEASE_DIR/${APP_NAME}-android-release.apk"
+SHA256_FILE="$FINAL_APK.sha256"
 
 ANDROID_KEYSTORE_PATH="$KEYSTORE_PATH" \
 ANDROID_KEY_ALIAS="$KEY_ALIAS" \
@@ -317,10 +371,11 @@ ANDROID_KEY_PASSWORD_FILE="$TMP_KEY_PASSWORD_FILE" \
     --alias "$KEY_ALIAS"
 
 cp -f "$FINAL_APK" "$LATEST_APK"
+sha256sum "$FINAL_APK" > "$SHA256_FILE"
 
-printf '\nFinal APK:\n'
-printf '  %s\n' "$FINAL_APK"
-printf 'Latest copy:\n'
-printf '  %s\n' "$LATEST_APK"
-printf 'SHA256:\n'
-sha256sum "$FINAL_APK"
+printf '\n================ Release Build Complete ================\n'
+printf 'Final APK:    %s\n' "$FINAL_APK"
+printf 'Latest copy:  %s\n' "$LATEST_APK"
+printf 'Checksum:     '
+cat "$SHA256_FILE"
+printf '========================================================\n\n'

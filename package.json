@@ -20,6 +20,7 @@
     "android:release": "bash ./build_apk",
     "android:keystore": "bash scripts/generate-android-keystore.sh",
     "android:sign": "bash scripts/sign-android-apk.sh",
+    "version:bump": "node scripts/bump-version.js",
     "test": "pnpm test:rust && pnpm test:unit",
     "test:rust": "cargo test -q --manifest-path src-tauri/Cargo.toml",
     "test:security": "pnpm test:rust && pnpm test:unit",

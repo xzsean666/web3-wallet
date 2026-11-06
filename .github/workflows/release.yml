@@ -1,0 +1,199 @@
+name: Release Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump_type:
+        description: 'Version bump type (patch, minor, major, custom)'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+          - custom
+      custom_version:
+        description: 'Custom version (only used if bump_type is "custom", e.g. 0.2.0)'
+        required: false
+        default: ''
+        type: string
+      build_target:
+        description: 'Android build target'
+        required: true
+        default: 'aarch64'
+        type: choice
+        options:
+          - aarch64
+          - universal
+          - armv7
+          - x86_64
+      draft:
+        description: 'Create draft release'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark as pre-release'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build & Release APK
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.12.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify Secrets Configuration
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::Secret ANDROID_KEYSTORE_BASE64 is not set! Please add your base64-encoded keystore to GitHub Repository Secrets."
+            exit 1
+          fi
+          if [ -z "$KEYSTORE_PASS" ]; then
+            echo "::error::Secret ANDROID_KEYSTORE_PASSWORD is not set! Please add your keystore password to GitHub Repository Secrets."
+            exit 1
+          fi
+          echo "Release secrets verified."
+
+      - name: Bump Version
+        id: bump_version
+        run: |
+          if [ "${{ inputs.bump_type }}" = "custom" ]; then
+            NEW_VER=$(node scripts/bump-version.js custom "${{ inputs.custom_version }}")
+          else
+            NEW_VER=$(node scripts/bump-version.js "${{ inputs.bump_type }}")
+          fi
+          TAG_NAME="v${NEW_VER}"
+          echo "version=${NEW_VER}" >> $GITHUB_OUTPUT
+          echo "tag=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "Release version: ${NEW_VER} (${TAG_NAME})"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Rust Android Targets
+        run: |
+          if [ "${{ inputs.build_target }}" = "universal" ]; then
+            rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+          elif [ "${{ inputs.build_target }}" = "armv7" ]; then
+            rustup target add armv7-linux-androideabi
+          elif [ "${{ inputs.build_target }}" = "x86_64" ]; then
+            rustup target add x86_64-linux-android
+          else
+            rustup target add aarch64-linux-android
+          fi
+
+      - name: Setup Android NDK and SDK build-tools
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME" >> $GITHUB_ENV
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> $GITHUB_ENV
+
+          # Locate or install NDK
+          if [ -d "$ANDROID_HOME/ndk" ] && [ -n "$(ls -A "$ANDROID_HOME/ndk" 2>/dev/null)" ]; then
+            LATEST_NDK=$(find "$ANDROID_HOME/ndk" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          else
+            echo "Installing Android NDK via sdkmanager..."
+            yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;26.3.11579264"
+            LATEST_NDK="$ANDROID_HOME/ndk/26.3.11579264"
+          fi
+          echo "NDK_HOME=$LATEST_NDK" >> $GITHUB_ENV
+          echo "Using NDK: $LATEST_NDK"
+
+          # Add build-tools (zipalign, apksigner) to PATH
+          LATEST_BT=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -n 1)
+          echo "$LATEST_BT" >> $GITHUB_PATH
+          echo "Using Build-Tools: $LATEST_BT"
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Build and Sign Android APK
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'upload' }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          TARGET_FLAG=""
+          if [ "${{ inputs.build_target }}" = "universal" ]; then
+            TARGET_FLAG="--universal"
+          else
+            TARGET_FLAG="--target ${{ inputs.build_target }}"
+          fi
+
+          # Build signed release APK (version already bumped in previous step)
+          ./build_apk --no-version-bump $TARGET_FLAG
+
+      - name: Commit version bump and push tag
+        env:
+          NEW_VER: ${{ steps.bump_version.outputs.version }}
+          TAG_NAME: ${{ steps.bump_version.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add package.json src-tauri/tauri.conf.json src-tauri/Cargo.toml
+          git commit -m "chore(release): release ${TAG_NAME} [skip ci]"
+          git tag -a "${TAG_NAME}" -m "Release ${TAG_NAME}"
+
+          # Push commit and new tag back to remote
+          git push origin HEAD:${{ github.ref_name }}
+          git push origin "${TAG_NAME}"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.bump_version.outputs.tag }}
+          name: Release ${{ steps.bump_version.outputs.tag }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            release/*.apk
+            release/*.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

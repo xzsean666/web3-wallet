@@ -80,64 +80,66 @@ bash scripts/install-android-build-env.sh
 
 如果你覆盖下载 URL，脚本现在会要求同时提供对应 SHA256；默认只接受 `https://` 且受信任主机，除非显式设置 `ALLOW_UNTRUSTED_DOWNLOAD_HOSTS=1`。
 
-## Android Release 签名
+## Android Release 构建与签名
 
-最省事的方式是直接执行根目录脚本：
+### 1. 本地构建 (通过环境变量注入私钥)
+
+支持直接通过环境变量提供 Base64 编码的私钥证书，无需在宿主机落地私钥文件：
 
 ```bash
+# 环境变量方式（推荐 CI 或无文件环境）
+export ANDROID_KEYSTORE_BASE64="$(base64 -w 0 /path/to/upload.keystore)"
+export ANDROID_KEYSTORE_PASSWORD="your-keystore-password"
+export ANDROID_KEY_ALIAS="upload" # 可选，默认 upload
+export ANDROID_KEY_PASSWORD="your-key-password" # 可选，默认等同于 keystore 密码
+
 ./build_apk
 ```
 
-或：
+或者通过文件路径指定私钥：
 
 ```bash
-pnpm android:release
+export ANDROID_KEYSTORE_PATH="/path/to/upload.keystore"
+export ANDROID_KEYSTORE_PASSWORD="your-keystore-password"
+./build_apk
 ```
 
-这个脚本会自动完成：
+`./build_apk` 常用选项：
+- `--bump [patch|minor|major]`: 升级版本号类型（默认 `patch`，如 `0.1.6` -> `0.1.7`）
+- `--version <ver>`: 显式指定版本号（如 `0.2.0`）
+- `--no-version-bump`: 保持当前版本不自增
+- `--target <target>`: 目标 ABI（默认 `aarch64` 即 arm64，可选 `armv7`、`x86_64`）
+- `--universal`: 构建全 ABI 通用包
+- `--release-dir <dir>`: 输出目录（默认 `./release`）
 
-- 将 app 版本号最后一段数字加 1，例如 `0.1.0` -> `0.1.1`
-- 构建 Android release APK
-- 对 `unsigned.apk` 做对齐和签名
-- 把最终可安装 APK 放到根目录 `release/`
+版本号变更会自动同步更新 `package.json`、`src-tauri/tauri.conf.json` 以及 `src-tauri/Cargo.toml`。
 
-执行时会让你输入 keystore 密码。`build_apk` 现在默认不会在缺少 keystore 时静默创建新的发布签名身份；请先显式生成 keystore：
+### 2. GitHub Actions 手动触发 Release
 
-```bash
-pnpm android:keystore
-```
+项目配置了自动化发布工作流 [`.github/workflows/release.yml`](.github/workflows/release.yml)。每次手动触发发布均会自动更新版本号、打 Git Tag、构建 Signed APK 并创建 GitHub Release。
 
-如果你明确要在当前机器上新建一个 keystore，再执行：
+#### 前置配置 (GitHub Repository Secrets)
+在 GitHub 仓库 **Settings -> Secrets and variables -> Actions** 中添加以下密钥：
+- `ANDROID_KEYSTORE_BASE64`: Release Keystore 文件的 Base64 编码字符串（可在本地执行 `base64 -w 0 android-upload.keystore` 得到）
+- `ANDROID_KEYSTORE_PASSWORD`: Keystore 密码
+- `ANDROID_KEY_ALIAS`: 密钥别名（可选，默认 `upload`）
+- `ANDROID_KEY_PASSWORD`: 密钥密码（可选，默认与 Keystore 密码相同）
 
-```bash
-./build_apk --create-keystore
-```
+#### 手动触发步骤
+1. 进入 GitHub 仓库页面的 **Actions** 标签。
+2. 在左侧选择 **Release Android APK** 工作流。
+3. 点击右侧 **Run workflow** 下拉菜单：
+   - **Version bump type**: 选择版本递增类型，默认 `patch`（每次触发自动递增修订版本号，如 `0.1.6` -> `0.1.7`），亦可选 `minor`、`major` 或 `custom`
+   - **Custom version**: 当选择 `custom` 时填入指定版本号（如 `1.0.0`）
+   - **Android build target**: 选择构建目标（默认 `aarch64`，可选 `universal` 等）
+   - **Create draft release / Mark as pre-release**: 可选发布标记
+4. 点击绿色 **Run workflow** 按钮启动发布。
 
-或：
-
-```bash
-ALLOW_NEW_KEYSTORE=1 ./build_apk
-```
-
-后续签名都复用这一组密码。
-签名和 keystore 生成流程已避免把口令值直接放入命令行参数。
-
-默认会生成两个文件：
-
-- `release/web3-wallet-v<version>-android-arm64-release.apk`
-- `release/web3-wallet-android-release.apk`
-
-如果你想打全 ABI 通用包：
-
-```bash
-./build_apk --universal
-```
-
-如果你想改输出目录：
-
-```bash
-./build_apk --release-dir /your/output/path
-```
+发布成功后，GitHub Action 会自动：
+1. 递增并同步版本号到 `package.json`、`tauri.conf.json`、`Cargo.toml`
+2. 提交版本变更并创建 Git Tag（如 `v0.1.7`）推送到远程仓库
+3. 使用 Secret 私钥自动构建并签名 release APK
+4. 创建 GitHub Release 并上传生成的 APK 文件及 SHA256 校验和文件，自动根据 commit 日志生成 Release Notes。
 
 如果某次构建不想递增版本号：
 
