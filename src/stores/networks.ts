@@ -5,6 +5,7 @@ import {
   loadPersistedUiState,
   patchPersistedUiState,
 } from "../services/uiState";
+import { PRESET_RPC_FALLBACKS } from "../services/chainlist";
 import type {
   NetworkConfig,
   NetworkDraft,
@@ -510,6 +511,20 @@ export const useNetworksStore = defineStore("networks", () => {
     return presetNetworks.find((network) => network.id === id)?.rpcUrl ?? null;
   }
 
+  function getNetworkRpcCandidates(id: string): string[] {
+    const network = allNetworks.value.find((entry) => entry.id === id);
+    if (!network) {
+      return [];
+    }
+    const fallbacks = PRESET_RPC_FALLBACKS[network.chainId]?.map((r) => r.url) ?? [];
+    const candidates = [network.rpcUrl, ...fallbacks];
+    const defaultRpc = getDefaultNetworkRpcUrl(id);
+    if (defaultRpc) {
+      candidates.push(defaultRpc);
+    }
+    return Array.from(new Set(candidates));
+  }
+
   watch(
     customNetworks,
     (nextNetworks) => {
@@ -548,6 +563,7 @@ export const useNetworksStore = defineStore("networks", () => {
     clearNetworkRpcOverride,
     customNetworks,
     getDefaultNetworkRpcUrl,
+    getNetworkRpcCandidates,
     hasNetworkRpcOverride,
     networkRpcOverrides,
     removeCustomNetwork,

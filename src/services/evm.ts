@@ -938,10 +938,13 @@ export async function broadcastSignedTransaction(options: {
 export async function validateRpcEndpoint(options: {
   expectedChainId: number;
   rpcUrl: string;
+  timeoutMs?: number;
 }): Promise<RpcEndpointValidation> {
   const startedAt = Date.now();
   const client = createPublicClient({
-    transport: http(options.rpcUrl),
+    transport: http(options.rpcUrl, {
+      timeout: options.timeoutMs ?? 8_000,
+    }),
   });
 
   try {

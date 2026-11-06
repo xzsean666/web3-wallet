@@ -3,9 +3,23 @@ import { computed, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
+import {
+  batchTestRpcLatencies,
+  getChainlistRpcsForChain,
+  searchChainlistChains,
+  testRpcLatency,
+} from "../../services/chainlist";
 import { validateRpcEndpoint } from "../../services/evm";
 import { useNetworksStore } from "../../stores/networks";
-import type { NetworkConfig, NetworkDraft, RpcEndpointValidation } from "../../types/network";
+import type {
+  ChainlistNetworkData,
+  ChainlistRpcItem,
+  NetworkConfig,
+  NetworkDraft,
+  RpcEndpointValidation,
+  RpcSpeedTestResult,
+  RpcTrackingPolicy,
+} from "../../types/network";
 import { formatChainLabel, formatDateTime } from "../../utils/format";
 
 const networksStore = useNetworksStore();
@@ -22,6 +36,22 @@ const rpcErrors = ref<string[]>([]);
 const isValidatingRpcOverride = ref(false);
 const rpcValidation = ref<RpcEndpointValidation | null>(null);
 const validatedRpcDraftKey = ref("");
+
+// Chainlist RPC Selection for Editing Network
+const chainlistRpcs = ref<ChainlistRpcItem[]>([]);
+const isLoadingChainlist = ref(false);
+const chainlistFilter = ref("");
+const rpcLatencyResults = ref<Record<string, RpcSpeedTestResult>>({});
+const isTestingBatchLatency = ref(false);
+const testingSingleRpc = ref<Record<string, boolean>>({});
+
+// Chainlist Search & Auto-fill for Custom Network
+const chainlistSearchQuery = ref("");
+const chainlistSearchResults = ref<ChainlistNetworkData[]>([]);
+const isSearchingChainlist = ref(false);
+const draftCandidateRpcs = ref<ChainlistRpcItem[]>([]);
+const isDraftCandidateLoading = ref(false);
+
 const draft = ref<NetworkDraft>({
   name: "",
   chainId: "",
@@ -121,6 +151,39 @@ const activeNetworkTone = computed(() =>
 );
 const activeNetworkEnvironmentLabel = computed(() => networkEnvironmentLabel(activeNetwork.value));
 
+const sortedAndFilteredCandidates = computed(() => {
+  const query = chainlistFilter.value.trim().toLowerCase();
+  let list = chainlistRpcs.value;
+
+  if (query) {
+    list = list.filter((item) => item.url.toLowerCase().includes(query));
+  }
+
+  return [...list].sort((a, b) => {
+    const aSelected = isSelectedCandidate(a.url);
+    const bSelected = isSelectedCandidate(b.url);
+    if (aSelected && !bSelected) return -1;
+    if (!aSelected && bSelected) return 1;
+
+    const aRes = rpcLatencyResults.value[a.url];
+    const bRes = rpcLatencyResults.value[b.url];
+
+    if (aRes && bRes) {
+      if (aRes.status === "ok" && bRes.status === "ok") {
+        return (aRes.latencyMs ?? 9999) - (bRes.latencyMs ?? 9999);
+      }
+      if (aRes.status === "ok") return -1;
+      if (bRes.status === "ok") return 1;
+    } else if (aRes && aRes.status === "ok") {
+      return -1;
+    } else if (bRes && bRes.status === "ok") {
+      return 1;
+    }
+
+    return 0;
+  });
+});
+
 watch(draftKey, (nextKey) => {
   if (validatedDraftKey.value && validatedDraftKey.value !== nextKey) {
     validation.value = null;
@@ -133,11 +196,34 @@ watch(rpcDraftKey, (nextKey) => {
   }
 });
 
+watch(
+  () => draft.value.chainId,
+  async (newChainId) => {
+    const chainIdNum = Number(newChainId.trim());
+    if (Number.isInteger(chainIdNum) && chainIdNum > 0) {
+      isDraftCandidateLoading.value = true;
+      try {
+        const rpcs = await getChainlistRpcsForChain(chainIdNum);
+        draftCandidateRpcs.value = rpcs;
+      } catch {
+        draftCandidateRpcs.value = [];
+      } finally {
+        isDraftCandidateLoading.value = false;
+      }
+    } else {
+      draftCandidateRpcs.value = [];
+    }
+  },
+);
+
 function resetForm() {
   editingId.value = null;
   formErrors.value = [];
   validation.value = null;
   validatedDraftKey.value = "";
+  chainlistSearchQuery.value = "";
+  chainlistSearchResults.value = [];
+  draftCandidateRpcs.value = [];
   draft.value = {
     name: "",
     chainId: "",
@@ -153,6 +239,8 @@ function startEdit(network: NetworkConfig) {
   formErrors.value = [];
   validation.value = null;
   validatedDraftKey.value = "";
+  chainlistSearchQuery.value = "";
+  chainlistSearchResults.value = [];
   draft.value = {
     name: network.name,
     chainId: String(network.chainId),
@@ -163,12 +251,41 @@ function startEdit(network: NetworkConfig) {
   };
 }
 
+async function loadChainlistForEditingNetwork(network: NetworkConfig, forceRefresh = false) {
+  isLoadingChainlist.value = true;
+  rpcLatencyResults.value = {};
+  chainlistFilter.value = "";
+  try {
+    const list = await getChainlistRpcsForChain(network.chainId, { forceRefresh });
+
+    const defaultRpc = defaultRpcUrl(network);
+    const existingUrls = new Set(list.map((item) => item.url));
+    const extraRpcs: ChainlistRpcItem[] = [];
+
+    if (defaultRpc && !existingUrls.has(defaultRpc)) {
+      existingUrls.add(defaultRpc);
+      extraRpcs.push({ url: defaultRpc, tracking: "unknown" });
+    }
+    if (network.rpcUrl && !existingUrls.has(network.rpcUrl)) {
+      existingUrls.add(network.rpcUrl);
+      extraRpcs.push({ url: network.rpcUrl, tracking: "unknown" });
+    }
+
+    chainlistRpcs.value = [...extraRpcs, ...list];
+  } finally {
+    isLoadingChainlist.value = false;
+  }
+}
+
 function resetRpcOverrideForm() {
   rpcEditingNetworkId.value = null;
   rpcDraft.value = "";
   rpcErrors.value = [];
   rpcValidation.value = null;
   validatedRpcDraftKey.value = "";
+  chainlistRpcs.value = [];
+  rpcLatencyResults.value = {};
+  chainlistFilter.value = "";
 }
 
 function startRpcOverrideEdit(network: NetworkConfig) {
@@ -177,6 +294,158 @@ function startRpcOverrideEdit(network: NetworkConfig) {
   rpcErrors.value = [];
   rpcValidation.value = null;
   validatedRpcDraftKey.value = "";
+  void loadChainlistForEditingNetwork(network);
+}
+
+function selectCandidateRpc(url: string) {
+  rpcDraft.value = url;
+  rpcErrors.value = [];
+  rpcValidation.value = null;
+  validatedRpcDraftKey.value = "";
+  void runRpcOverrideValidation();
+}
+
+function isSelectedCandidate(url: string) {
+  return rpcDraft.value.trim() === url.trim() || rpcDraft.value.trim() === url.replace(/\/$/, "");
+}
+
+function isActiveNetworkRpc(url: string) {
+  const current = rpcEditingNetwork.value?.rpcUrl;
+  if (!current) return false;
+  return current.trim() === url.trim() || current.trim() === url.replace(/\/$/, "");
+}
+
+function isDefaultPresetRpc(url: string) {
+  if (!rpcEditingNetwork.value) return false;
+  const def = defaultRpcUrl(rpcEditingNetwork.value);
+  if (!def) return false;
+  return def.trim() === url.trim() || def.trim() === url.replace(/\/$/, "");
+}
+
+async function testSingleRpc(url: string) {
+  if (!rpcEditingNetwork.value) return;
+  testingSingleRpc.value[url] = true;
+  try {
+    const result = await testRpcLatency(rpcEditingNetwork.value.chainId, url);
+    rpcLatencyResults.value[url] = result;
+  } finally {
+    testingSingleRpc.value[url] = false;
+  }
+}
+
+async function testAllCandidateRpcs() {
+  if (!rpcEditingNetwork.value || chainlistRpcs.value.length === 0) return;
+  isTestingBatchLatency.value = true;
+  const urls = chainlistRpcs.value.map((r) => r.url);
+  try {
+    await batchTestRpcLatencies(
+      rpcEditingNetwork.value.chainId,
+      urls,
+      (result) => {
+        rpcLatencyResults.value[result.url] = result;
+      },
+      3,
+    );
+  } finally {
+    isTestingBatchLatency.value = false;
+  }
+}
+
+function trackingLabel(policy?: RpcTrackingPolicy) {
+  switch (policy) {
+    case "none":
+      return "无追踪";
+    case "limited":
+      return "有限追踪";
+    case "yes":
+      return "记录追踪";
+    default:
+      return "未声明";
+  }
+}
+
+function trackingChipClass(policy?: RpcTrackingPolicy) {
+  switch (policy) {
+    case "none":
+      return "status-chip--good";
+    case "limited":
+      return "status-chip--medium";
+    case "yes":
+      return "status-chip--warning";
+    default:
+      return "";
+  }
+}
+
+function latencyLabel(result?: RpcSpeedTestResult, url?: string) {
+  if (url && testingSingleRpc.value[url]) {
+    return "测速中...";
+  }
+  if (!result || result.status === "untested") {
+    return "未测速";
+  }
+  if (result.status === "ok" && result.latencyMs !== null) {
+    return `${result.latencyMs} ms`;
+  }
+  if (result.status === "mismatch") {
+    return "Chain ID 不符";
+  }
+  return "不可用";
+}
+
+function latencyChipClass(result?: RpcSpeedTestResult) {
+  if (!result || result.status === "untested") {
+    return "";
+  }
+  if (result.status === "ok" && result.latencyMs !== null) {
+    if (result.latencyMs < 300) return "status-chip--good";
+    if (result.latencyMs < 800) return "status-chip--medium";
+    return "status-chip--slow";
+  }
+  return "status-chip--danger";
+}
+
+let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+function handleChainlistSearch() {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = setTimeout(async () => {
+    const query = chainlistSearchQuery.value.trim();
+    if (!query) {
+      chainlistSearchResults.value = [];
+      return;
+    }
+    isSearchingChainlist.value = true;
+    try {
+      chainlistSearchResults.value = await searchChainlistChains(query, { limit: 6 });
+    } finally {
+      isSearchingChainlist.value = false;
+    }
+  }, 250);
+}
+
+function selectChainlistChain(chain: ChainlistNetworkData) {
+  draft.value = {
+    name: chain.name,
+    chainId: String(chain.chainId),
+    symbol: chain.nativeCurrency?.symbol ?? "ETH",
+    explorerUrl: chain.explorers?.[0]?.url ?? "",
+    environment: chain.isTestnet ? "testnet" : "mainnet",
+    rpcUrl: chain.rpc[0]?.url ?? "",
+  };
+  draftCandidateRpcs.value = chain.rpc;
+  chainlistSearchResults.value = [];
+  chainlistSearchQuery.value = "";
+  formErrors.value = [];
+  validation.value = null;
+  validatedDraftKey.value = "";
+  void runRpcValidation();
+}
+
+function selectDraftCandidateRpc(url: string) {
+  draft.value.rpcUrl = url;
+  void runRpcValidation();
 }
 
 function networkEnvironmentLabel(network: NetworkConfig) {
@@ -387,8 +656,8 @@ function removeNetwork(id: string) {
 <template>
   <WalletChrome
     eyebrow="Networks"
-    title="自定义网络已经进入可校验、可切换、可维护的 MVP 形态。"
-    subtitle="保存前会校验 RPC 可访问性、Chain ID 和最新区块，但这只是连通性检查，自定义 RPC 仍然可能返回不可信链上数据。"
+    title="自定义网络与 RPC 管理"
+    subtitle="支持从 Chainlist 实时选择公共 RPC 节点、快速测速比对，并在保存前自动校验 Chain ID 和区块连通性。"
   >
     <section class="status-grid">
       <SectionCard title="Active" description="当前生效网络" :tone="activeNetworkTone">
@@ -442,7 +711,7 @@ function removeNetwork(id: string) {
               </div>
               <p>{{ network.rpcUrl }}</p>
               <p v-if="isRpcOverridden(network)" class="helper-text">
-                默认 RPC：{{ defaultRpcUrl(network) }}
+                预置默认 RPC：{{ defaultRpcUrl(network) }}
               </p>
             </div>
             <div class="inline-actions">
@@ -519,7 +788,7 @@ function removeNetwork(id: string) {
               </div>
               <p>{{ network.rpcUrl }}</p>
               <p v-if="isRpcOverridden(network)" class="helper-text">
-                默认 RPC：{{ defaultRpcUrl(network) }}
+                预置默认 RPC：{{ defaultRpcUrl(network) }}
               </p>
             </div>
             <div class="inline-actions">
@@ -571,7 +840,7 @@ function removeNetwork(id: string) {
     <section class="page-grid page-grid--2">
       <SectionCard
         title="Change RPC URL"
-        description="只替换当前网络的 RPC 节点，保存前必须返回相同 Chain ID。"
+        description="支持从 Chainlist 实时选择公共 RPC 节点或填入自定义节点，保存前会自动校验 Chain ID。"
         :tone="rpcValidationTone"
       >
         <template v-if="rpcEditingNetwork">
@@ -584,13 +853,99 @@ function removeNetwork(id: string) {
               <span>Chain ID</span>
               <input :value="formatChainLabel(rpcEditingNetwork.chainId)" disabled />
             </label>
+
+            <!-- Chainlist Candidates Section -->
+            <div class="rpc-candidate-section">
+              <div class="rpc-toolbar">
+                <strong>Chainlist 节点候选 ({{ chainlistRpcs.length }})</strong>
+                <div class="inline-actions">
+                  <button
+                    class="button button--secondary button--small"
+                    type="button"
+                    :disabled="isTestingBatchLatency || chainlistRpcs.length === 0"
+                    @click="testAllCandidateRpcs"
+                  >
+                    {{ isTestingBatchLatency ? "正在测速..." : "一键测速全部" }}
+                  </button>
+                  <button
+                    class="button button--ghost button--small"
+                    type="button"
+                    :disabled="isLoadingChainlist"
+                    @click="loadChainlistForEditingNetwork(rpcEditingNetwork, true)"
+                  >
+                    {{ isLoadingChainlist ? "刷新中..." : "刷新 Chainlist" }}
+                  </button>
+                </div>
+              </div>
+
+              <input
+                v-if="chainlistRpcs.length > 5"
+                v-model="chainlistFilter"
+                class="field"
+                placeholder="筛选候选 RPC 节点地址..."
+              />
+
+              <div v-if="isLoadingChainlist" class="empty-state">
+                正在从 Chainlist 获取可用节点列表...
+              </div>
+              <div v-else-if="sortedAndFilteredCandidates.length > 0" class="rpc-candidate-list">
+                <div
+                  v-for="candidate in sortedAndFilteredCandidates"
+                  :key="candidate.url"
+                  :class="['rpc-candidate-item', { 'rpc-candidate-item--active': isSelectedCandidate(candidate.url) }]"
+                  @click="selectCandidateRpc(candidate.url)"
+                >
+                  <div class="rpc-candidate-main">
+                    <p class="rpc-candidate-url">{{ candidate.url }}</p>
+                    <div class="rpc-candidate-badges">
+                      <span :class="['status-chip', trackingChipClass(candidate.tracking)]">
+                        {{ trackingLabel(candidate.tracking) }}
+                      </span>
+                      <span v-if="isActiveNetworkRpc(candidate.url)" class="status-chip status-chip--accent">
+                        当前使用
+                      </span>
+                      <span v-if="isDefaultPresetRpc(candidate.url)" class="status-chip">
+                        预置默认
+                      </span>
+                      <span v-if="isSelectedCandidate(candidate.url)" class="status-chip status-chip--accent">
+                        已选定
+                      </span>
+                    </div>
+                  </div>
+                  <div class="rpc-candidate-actions">
+                    <span :class="['status-chip', latencyChipClass(rpcLatencyResults[candidate.url])]">
+                      {{ latencyLabel(rpcLatencyResults[candidate.url], candidate.url) }}
+                    </span>
+                    <button
+                      class="button button--ghost button--small"
+                      type="button"
+                      :disabled="testingSingleRpc[candidate.url]"
+                      @click.stop="testSingleRpc(candidate.url)"
+                    >
+                      测速
+                    </button>
+                    <button
+                      class="button button--secondary button--small"
+                      type="button"
+                      @click.stop="selectCandidateRpc(candidate.url)"
+                    >
+                      选择
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <p v-else class="empty-state">
+                未找到匹配的 RPC 节点。可在下方手动填入。
+              </p>
+            </div>
+
             <label class="field">
-              <span>RPC URL</span>
+              <span>当前选定 / 自定义 RPC URL</span>
               <input v-model="rpcDraft" placeholder="https://rpc.example.org" />
             </label>
 
             <p v-if="rpcEditingNetwork.source === 'preset'" class="helper-text">
-              默认 RPC：{{ defaultRpcUrl(rpcEditingNetwork) }}
+              预置默认 RPC：{{ defaultRpcUrl(rpcEditingNetwork) }}
             </p>
 
             <ul v-if="rpcErrors.length" class="bullet-list helper-text helper-text--error">
@@ -599,6 +954,12 @@ function removeNetwork(id: string) {
 
             <p v-if="rpcValidation" class="helper-text">
               {{ rpcValidationStatusLabel }} · {{ rpcValidation.message }}
+              <template v-if="rpcValidation.latencyMs">
+                · 延迟 {{ rpcValidation.latencyMs }} ms
+              </template>
+              <template v-if="rpcValidation.latestBlock">
+                · 最新区块 {{ rpcValidation.latestBlock }}
+              </template>
             </p>
 
             <div class="form-actions">
@@ -608,7 +969,7 @@ function removeNetwork(id: string) {
                 :disabled="isValidatingRpcOverride"
                 @click="runRpcOverrideValidation"
               >
-                {{ isValidatingRpcOverride ? "正在校验 RPC..." : "先校验 RPC" }}
+                {{ isValidatingRpcOverride ? "正在校验 RPC..." : "校验当前 RPC" }}
               </button>
               <button class="button button--primary" type="submit" :disabled="isValidatingRpcOverride">
                 校验并保存 RPC
@@ -628,14 +989,41 @@ function removeNetwork(id: string) {
           </form>
         </template>
         <p v-else class="empty-state">
-          在上方正式网或测试网列表中点击“更改 RPC”。
+          在上方正式网或测试网列表中点击“更改 RPC”，可从 Chainlist 提供的海量节点中挑选。
         </p>
       </SectionCard>
 
       <SectionCard
         :title="editingId ? 'Edit Custom Network' : 'Add Custom Network'"
-        description="只接受 EVM 网络参数，保存前必须通过 RPC 连通性校验"
+        description="支持从 Chainlist 搜索网络一键导入，或手动配置 EVM 参数"
       >
+        <div v-if="!editingId" class="chainlist-search">
+          <label class="field">
+            <span>从 Chainlist 快速搜索预填网络</span>
+            <input
+              v-model="chainlistSearchQuery"
+              placeholder="搜索网络名称 (如 Gnosis, Scroll) 或 Chain ID (如 100)"
+              @input="handleChainlistSearch"
+            />
+          </label>
+          <div v-if="chainlistSearchResults.length > 0" class="chainlist-search-results">
+            <div
+              v-for="chain in chainlistSearchResults"
+              :key="chain.chainId"
+              class="chainlist-search-item"
+              @click="selectChainlistChain(chain)"
+            >
+              <div>
+                <strong>{{ chain.name }}</strong>
+                <span class="helper-text"> (Chain ID: {{ chain.chainId }}, {{ chain.nativeCurrency?.symbol ?? 'ETH' }})</span>
+              </div>
+              <button class="button button--secondary button--small" type="button">
+                导入此网络
+              </button>
+            </div>
+          </div>
+        </div>
+
         <form class="form-grid" @submit.prevent="submitNetwork">
           <label class="field">
             <span>网络名称</span>
@@ -652,6 +1040,32 @@ function removeNetwork(id: string) {
               <option value="testnet">测试网</option>
             </select>
           </label>
+
+          <div v-if="draftCandidateRpcs.length > 0" class="rpc-candidate-section">
+            <div class="rpc-toolbar">
+              <strong>Chainlist 节点候选 ({{ draftCandidateRpcs.length }})</strong>
+              <span class="helper-text">点击候选节点直接选用</span>
+            </div>
+            <div class="rpc-candidate-list" style="max-height: 160px;">
+              <div
+                v-for="candidate in draftCandidateRpcs.slice(0, 8)"
+                :key="candidate.url"
+                :class="['rpc-candidate-item', { 'rpc-candidate-item--active': draft.rpcUrl === candidate.url }]"
+                @click="selectDraftCandidateRpc(candidate.url)"
+              >
+                <p class="rpc-candidate-url">{{ candidate.url }}</p>
+                <div class="rpc-candidate-badges">
+                  <span :class="['status-chip', trackingChipClass(candidate.tracking)]">
+                    {{ trackingLabel(candidate.tracking) }}
+                  </span>
+                  <span v-if="draft.rpcUrl === candidate.url" class="status-chip status-chip--accent">
+                    已选
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <label class="field">
             <span>RPC URL</span>
             <input v-model="draft.rpcUrl" placeholder="https://rpc.example.org" />
@@ -720,14 +1134,14 @@ function removeNetwork(id: string) {
         </p>
       </SectionCard>
 
-      <SectionCard title="Rules" description="当前网络管理规则">
+      <SectionCard title="Rules" description="当前网络与 RPC 规则">
         <ul class="bullet-list">
-          <li>只允许保存 EVM 兼容网络</li>
+          <li>只允许保存 EVM 兼容网络与 HTTPS 协议 RPC</li>
+          <li>支持从 Chainlist 实时选择公共节点，并提供防追踪隐私标识</li>
+          <li>支持一键测速或单节点测速，比对节点响应延迟与最新块高</li>
           <li>Chain ID 不能和现有网络重复</li>
-          <li>RPC URL 必须是 HTTP 或 HTTPS</li>
-          <li>保存前会校验 Chain ID 与最新区块</li>
-          <li>预置网络只允许覆盖 RPC URL，可随时恢复默认 RPC</li>
-          <li>自定义 RPC 即使校验通过，也不代表节点可信或返回结果未被篡改</li>
+          <li>预置网络可随时切换 RPC，并一键恢复预置默认 RPC</li>
+          <li>公共 RPC 即使响应迅速且校验通过，也不代表节点返回结果不可篡改</li>
         </ul>
       </SectionCard>
     </section>
