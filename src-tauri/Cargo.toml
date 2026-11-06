@@ -1,6 +1,6 @@
 [package]
 name = "web3-wallet"
-version = "0.1.0"
+version = "0.1.7"
 description = "Cross-platform Web3 wallet built with Tauri and Vue"
 authors = ["sean"]
 edition = "2021"
