@@ -90,6 +90,11 @@ export async function mockJsonRpc(
   });
 }
 
+export const DEFAULT_MOCK_TX_HASH =
+  "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+export const DEFAULT_MOCK_BLOCK_HASH =
+  "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890";
+
 export async function setupDefaultEthereumRpcMock(
   page: Page,
   options: EthereumRpcMockOptions = {},
@@ -102,6 +107,71 @@ export async function setupDefaultEthereumRpcMock(
         return { result: options.latestBlockHex ?? "0x1234" };
       case "eth_getBalance":
         return { result: options.nativeBalanceHex ?? "0x14d1120d7b160000" };
+      case "eth_gasPrice":
+        return { result: "0x4a817c800" }; // 20 Gwei
+      case "eth_estimateGas":
+        return { result: "0x5208" }; // 21000
+      case "eth_getTransactionCount":
+        return { result: "0x1" };
+      case "eth_maxPriorityFeePerGas":
+        return { result: "0x77359400" }; // 2 Gwei
+      case "eth_feeHistory":
+        return {
+          result: {
+            oldestBlock: "0x1230",
+            baseFeePerGas: ["0x3b9aca00", "0x3b9aca00"],
+            gasUsedRatio: [0.5],
+            reward: [["0x77359400"]],
+          },
+        };
+      case "eth_getBlockByNumber":
+        return {
+          result: {
+            number: options.latestBlockHex ?? "0x1234",
+            hash: DEFAULT_MOCK_BLOCK_HASH,
+            parentHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+            timestamp: "0x660e8000",
+            baseFeePerGas: "0x3b9aca00",
+            gasLimit: "0x1c9c380",
+            gasUsed: "0x5208",
+          },
+        };
+      case "eth_getTransactionByHash": {
+        const hash = String(params[0] ?? DEFAULT_MOCK_TX_HASH);
+        return {
+          result: {
+            hash,
+            nonce: "0x1",
+            blockHash: DEFAULT_MOCK_BLOCK_HASH,
+            blockNumber: options.latestBlockHex ?? "0x1234",
+            transactionIndex: "0x0",
+            from: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            to: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            value: "0xde0b6b3a7640000", // 1.0 ETH
+            gas: "0x5208",
+            gasPrice: "0x4a817c800",
+            input: "0x",
+          },
+        };
+      }
+      case "eth_getTransactionReceipt": {
+        const hash = String(params[0] ?? DEFAULT_MOCK_TX_HASH);
+        return {
+          result: {
+            transactionHash: hash,
+            transactionIndex: "0x0",
+            blockHash: DEFAULT_MOCK_BLOCK_HASH,
+            blockNumber: options.latestBlockHex ?? "0x1234",
+            from: "0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266",
+            to: "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+            cumulativeGasUsed: "0x5208",
+            gasUsed: "0x5208",
+            effectiveGasPrice: "0x4a817c800",
+            status: "0x1",
+            logs: [],
+          },
+        };
+      }
       case "eth_call": {
         const request = (params[0] ?? {}) as {
           to?: string;
@@ -172,14 +242,14 @@ export async function createFreshWallet(
   await page.goto("/");
   await page.getByRole("link", { name: "创建钱包" }).click();
   await page.getByLabel("钱包名称").fill(walletLabel);
-  await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
+  await page.getByLabel("设置密码").fill(WALLET_PASSWORD);
   await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
-  await page.getByRole("button", { name: "继续并生成助记词" }).click();
-  await expect(page.getByText("这一步不要偷懒，助记词只展示一次。")).toBeVisible();
+  await page.getByRole("button", { name: /下一步/ }).click();
+  await expect(page.getByText(/助记词用于控制和恢复钱包资产/)).toBeVisible();
   await page.getByPlaceholder("输入创建这个钱包时设置的密码").fill(WALLET_PASSWORD);
-  await page.getByRole("button", { name: "显示助记词" }).click();
+  await page.getByRole("button", { name: "验证密码并显示助记词" }).click();
   await expect(page.locator(".word-chip")).toHaveCount(12);
-  await page.getByLabel("我已经离线备份这组助记词").check();
+  await page.getByLabel("我已按顺序在纸上正确抄写助记词").check();
   await page.getByRole("button", { name: "完成备份并进入钱包" }).click();
   await expect(page).toHaveURL(/\/wallet$/);
   await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();

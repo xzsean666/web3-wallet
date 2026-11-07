@@ -16,4 +16,8 @@ await bootstrapUiState();
 await useSessionStore(pinia).bootstrap();
 await useOnboardingStore(pinia).bootstrap();
 app.use(router);
+if (typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__APP_ROUTER__ = router;
+  (window as unknown as Record<string, unknown>).__APP_PINIA__ = pinia;
+}
 app.mount("#app");

@@ -10,11 +10,13 @@
 - 接入 `vue-router`、`pinia`、`Vitest`、`Playwright`
 - 完成全量移动端 UI/UX Glassmorphism 适配与暗黑炫彩动画重构
 - 非敏感运行时状态在 Tauri 环境下已落本地 `SQLite`
+- 新增全流程可视化 E2E 测试套件与功能截图画廊（详见 [docs/screenshots](docs/screenshots/README.md)）
 
 ## 目录
 
 ```text
 docs/
+  screenshots/
 src/
 src-tauri/
 Agent.md

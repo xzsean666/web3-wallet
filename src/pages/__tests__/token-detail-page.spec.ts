@@ -120,7 +120,7 @@ describe("TokenDetailPage", () => {
 
     const scanLinks = wrapper
       .findAll("a")
-      .filter((link) => link.text().includes("扫码付款"));
+      .filter((link) => link.text().includes("扫码"));
 
     expect(scanLinks.length).toBeGreaterThanOrEqual(1);
     expect(scanLinks[0].attributes("data-to")).toContain('"name":"wallet-send"');

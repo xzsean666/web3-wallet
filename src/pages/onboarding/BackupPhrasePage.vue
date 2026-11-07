@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import SectionCard from "../../components/SectionCard.vue";
+import { saveBiometricUnlockCredential } from "../../services/biometrics";
 import {
   cancelPendingWallet,
   finalizePendingWallet,
@@ -22,6 +22,52 @@ const confirmed = ref(false);
 const formError = ref("");
 const backupPassword = ref("");
 const words = ref<string[]>([]);
+const isCopied = ref(false);
+let copyResetTimer: number | null = null;
+
+async function copyBackupPhrase() {
+  if (words.value.length === 0) {
+    return;
+  }
+
+  const phrase = words.value.join(" ");
+  let succeeded = false;
+
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(phrase);
+      succeeded = true;
+    }
+  } catch {
+    succeeded = false;
+  }
+
+  if (!succeeded) {
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = phrase;
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      succeeded = document.execCommand("copy");
+      document.body.removeChild(textArea);
+    } catch {
+      succeeded = false;
+    }
+  }
+
+  if (succeeded) {
+    isCopied.value = true;
+    if (copyResetTimer) {
+      window.clearTimeout(copyResetTimer);
+    }
+    copyResetTimer = window.setTimeout(() => {
+      isCopied.value = false;
+    }, 2500);
+  }
+}
 const backTarget = computed(() => {
   if (!sessionStore.hasWallet) {
     return "/welcome";
@@ -121,6 +167,9 @@ async function finalizeBackup() {
       backupAccessToken: onboardingStore.backupAccessToken,
       confirmedBackup: confirmed.value,
     });
+    if (profile.isBiometricEnabled && backupPassword.value) {
+      saveBiometricUnlockCredential(profile.accountId, backupPassword.value);
+    }
     onboardingStore.clearDraft();
     sessionStore.applyWalletProfile(profile, { unlocked: true });
     await router.replace("/wallet");
@@ -138,35 +187,22 @@ async function cancelFlow() {
 </script>
 
 <template>
-  <main class="page-shell">
-    <section class="marketing-hero marketing-hero--compact">
-      <div class="hero-copy">
-        <p class="eyebrow">Backup Phrase</p>
-        <h1>这一步不要偷懒，助记词只展示一次。</h1>
-        <p class="subtitle">
-          当前页面只服务于创建钱包流程。确认离线备份后会直接进入资产首页，
-          钱包资料会继续保持在本地安全边界内。
-        </p>
-      </div>
-      <SectionCard title="Warning" description="任何人拿到这组词都能控制你的钱包" tone="warning">
-        <ul class="bullet-list">
-          <li>不要截图</li>
-          <li>不要复制到聊天工具</li>
-          <li>不要存到云笔记</li>
-        </ul>
-      </SectionCard>
-    </section>
-
-    <section class="page-grid page-grid--2">
-      <SectionCard title="Recovery Phrase" description="建议离线抄写">
-        <div class="word-grid">
-          <span v-for="(word, index) in words" :key="`${index}-${word}`" class="word-chip">
-            {{ index + 1 }}. {{ word }}
-          </span>
+  <main class="page-shell" style="justify-content: center;">
+    <section class="section-card" style="padding: 24px;">
+      <header class="section-card__header">
+        <div>
+          <h2>备份助记词</h2>
+          <p>第 2 步：离线抄写并妥善保管助记词</p>
         </div>
-      </SectionCard>
+        <button class="button button--ghost button--small" type="button" @click="cancelFlow">取消</button>
+      </header>
 
-      <SectionCard title="Confirm" description="完成确认后才允许进入钱包">
+      <div style="padding: 12px; border-radius: var(--radius-sm); background: var(--accent-warning-soft); border: 1px solid rgba(245, 158, 11, 0.28); color: #fde68a; font-size: 0.8rem;">
+        <strong>重要提示：</strong> 助记词用于控制和恢复钱包资产。切勿截图、切勿存入网络相册或聊天工具。
+      </div>
+
+      <!-- Password to reveal if words not yet revealed -->
+      <div v-if="words.length === 0" class="form-grid">
         <label class="field">
           <span>钱包密码</span>
           <input
@@ -177,45 +213,118 @@ async function cancelFlow() {
             placeholder="输入创建这个钱包时设置的密码"
           />
         </label>
+        <button
+          class="button button--primary"
+          type="button"
+          :disabled="previewSecretFlowBlocked || !backupPassword.trim()"
+          @click="revealBackupPhrase"
+        >
+          验证密码并显示助记词
+        </button>
+      </div>
 
-        <div class="form-actions">
+      <!-- Recovery Phrase Words Grid -->
+      <div v-if="words.length > 0" class="word-grid">
+        <span v-for="(word, index) in words" :key="`${index}-${word}`" class="word-chip">
+          <span style="color: var(--text-muted); font-size: 0.74rem; margin-right: 4px;">{{ index + 1 }}.</span>
+          <strong>{{ word }}</strong>
+        </span>
+      </div>
+
+      <!-- One-click Copy Action -->
+      <div v-if="words.length > 0" style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 0.76rem; color: var(--text-muted);">共 12 个助记词</span>
           <button
-            class="button button--secondary"
+            class="button button--ghost button--small copy-phrase-button"
             type="button"
-            :disabled="previewSecretFlowBlocked"
-            @click="revealBackupPhrase"
+            style="display: inline-flex; align-items: center; gap: 4px;"
+            @click="copyBackupPhrase"
           >
-            显示助记词
+            <svg
+              v-if="!isCopied"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+            <svg
+              v-else
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="#10b981"
+              stroke-width="2.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <polyline points="20 6 9 17 4 12" />
+            </svg>
+            <span :style="isCopied ? 'color: #10b981; font-weight: 600;' : ''">
+              {{ isCopied ? "已复制可导入助记词" : "一键复制助记词" }}
+            </span>
           </button>
         </div>
+        <div
+          v-if="isCopied"
+          style="
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            background: rgba(16, 185, 129, 0.12);
+            border: 1px solid rgba(16, 185, 129, 0.28);
+            color: #6ee7b7;
+            font-size: 0.76rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+          "
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12" />
+          </svg>
+          已复制到剪贴板（空格分隔），可直接粘贴导入钱包
+        </div>
+      </div>
 
+      <div v-if="words.length > 0" class="form-grid" style="margin-top: 8px;">
         <label class="toggle-row">
           <input v-model="confirmed" :disabled="previewSecretFlowBlocked" type="checkbox" />
-          <span>我已经离线备份这组助记词</span>
+          <span>我已按顺序在纸上正确抄写助记词</span>
         </label>
-
-        <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
-        <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
-          {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
-        </p>
 
         <div class="form-actions">
           <button
             class="button button--primary"
             type="button"
-            :disabled="previewSecretFlowBlocked"
+            :disabled="previewSecretFlowBlocked || !confirmed"
             @click="finalizeBackup"
           >
             完成备份并进入钱包
           </button>
-          <button class="button button--ghost" type="button" @click="cancelFlow">
-            取消创建流程
-          </button>
-          <RouterLink class="button button--ghost" :to="backTarget">
-            {{ sessionStore.hasWallet ? "返回账号管理" : "返回上一步" }}
-          </RouterLink>
         </div>
-      </SectionCard>
+      </div>
+
+      <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
+      <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
+        {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
+      </p>
+
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.78rem;">
+        <button class="button button--ghost button--small" type="button" @click="cancelFlow">
+          取消创建流程
+        </button>
+        <RouterLink class="button button--ghost button--small" :to="backTarget">
+          {{ sessionStore.hasWallet ? "返回账号管理" : "返回上一步" }}
+        </RouterLink>
+      </div>
     </section>
   </main>
 </template>

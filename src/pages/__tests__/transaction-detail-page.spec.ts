@@ -25,6 +25,17 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 vi.mock("vue-router", () => ({
+  RouterLink: defineComponent({
+    name: "RouterLink",
+    props: {
+      to: {
+        type: [String, Object],
+        required: false,
+        default: "",
+      },
+    },
+    template: "<a><slot /></a>",
+  }),
   useRoute: () => ({
     params: {
       txHash: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

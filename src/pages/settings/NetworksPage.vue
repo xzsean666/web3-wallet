@@ -1,11 +1,13 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
+import { RouterLink } from "vue-router";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import {
   batchTestRpcLatencies,
   getChainlistRpcsForChain,
+  PRESET_RPC_FALLBACKS,
   searchChainlistChains,
   testRpcLatency,
 } from "../../services/chainlist";
@@ -23,7 +25,7 @@ import type {
 import { formatChainLabel, formatDateTime } from "../../utils/format";
 
 const networksStore = useNetworksStore();
-const { activeNetwork, allNetworks, customNetworks } = storeToRefs(networksStore);
+const { activeNetwork, allNetworks } = storeToRefs(networksStore);
 
 const editingId = ref<string | null>(null);
 const formErrors = ref<string[]>([]);
@@ -106,33 +108,33 @@ const rpcValidationTone = computed(() => {
 });
 const validationStatusLabel = computed(() => {
   if (!validation.value) {
-    return "Not Checked";
+    return "未校验";
   }
 
   if (validation.value.status === "ok") {
-    return "Reachable";
+    return "节点可用";
   }
 
   if (validation.value.status === "mismatch") {
-    return "Chain Mismatch";
+    return "Chain ID 不匹配";
   }
 
-  return "Unavailable";
+  return "节点不可用";
 });
 const rpcValidationStatusLabel = computed(() => {
   if (!rpcValidation.value) {
-    return "Not Checked";
+    return "未校验";
   }
 
   if (rpcValidation.value.status === "ok") {
-    return "Reachable";
+    return "节点可用";
   }
 
   if (rpcValidation.value.status === "mismatch") {
-    return "Chain Mismatch";
+    return "Chain ID 不匹配";
   }
 
-  return "Unavailable";
+  return "节点不可用";
 });
 const mainnetNetworks = computed(() =>
   allNetworks.value.filter((network) => network.environment === "mainnet"),
@@ -142,10 +144,6 @@ const testnetNetworks = computed(() =>
 );
 const mainnetNetworkCount = computed(() => mainnetNetworks.value.length);
 const testnetNetworkCount = computed(() => testnetNetworks.value.length);
-const presetNetworkCount = computed(() =>
-  allNetworks.value.filter((network) => network.source === "preset").length,
-);
-const customNetworkCount = computed(() => customNetworks.value.length);
 const activeNetworkTone = computed(() =>
   activeNetwork.value.environment === "testnet" ? "warning" : "accent",
 );
@@ -252,19 +250,41 @@ function startEdit(network: NetworkConfig) {
 }
 
 async function loadChainlistForEditingNetwork(network: NetworkConfig, forceRefresh = false) {
-  isLoadingChainlist.value = true;
   rpcLatencyResults.value = {};
   chainlistFilter.value = "";
-  try {
-    const list = await getChainlistRpcsForChain(network.chainId, { forceRefresh });
 
-    const defaultRpc = defaultRpcUrl(network);
+  // Pre-seed with fallback/preset RPCs so the candidates are immediately available to the user
+  const defaultRpc = defaultRpcUrl(network);
+  const fallbacks = PRESET_RPC_FALLBACKS[network.chainId] ?? [];
+  const seedUrls = new Set<string>();
+  const seedList: ChainlistRpcItem[] = [];
+
+  if (defaultRpc) {
+    seedUrls.add(defaultRpc);
+    seedList.push({ url: defaultRpc, tracking: "none" });
+  }
+  if (network.rpcUrl && !seedUrls.has(network.rpcUrl)) {
+    seedUrls.add(network.rpcUrl);
+    seedList.push({ url: network.rpcUrl, tracking: "unknown" });
+  }
+  for (const item of fallbacks) {
+    if (!seedUrls.has(item.url)) {
+      seedUrls.add(item.url);
+      seedList.push(item);
+    }
+  }
+  chainlistRpcs.value = seedList;
+
+  isLoadingChainlist.value = true;
+  try {
+    const list = await getChainlistRpcsForChain(network.chainId, { forceRefresh, timeoutMs: 3000 });
+
     const existingUrls = new Set(list.map((item) => item.url));
     const extraRpcs: ChainlistRpcItem[] = [];
 
     if (defaultRpc && !existingUrls.has(defaultRpc)) {
       existingUrls.add(defaultRpc);
-      extraRpcs.push({ url: defaultRpc, tracking: "unknown" });
+      extraRpcs.push({ url: defaultRpc, tracking: "none" });
     }
     if (network.rpcUrl && !existingUrls.has(network.rpcUrl)) {
       existingUrls.add(network.rpcUrl);
@@ -295,6 +315,34 @@ function startRpcOverrideEdit(network: NetworkConfig) {
   rpcValidation.value = null;
   validatedRpcDraftKey.value = "";
   void loadChainlistForEditingNetwork(network);
+}
+
+onMounted(() => {
+  if (!rpcEditingNetworkId.value && activeNetwork.value) {
+    startRpcOverrideEdit(activeNetwork.value);
+  }
+});
+
+const popularChainlistPresets = [
+  { name: "Arbitrum One", chainId: "42161", symbol: "ETH", rpcUrl: "https://arb1.arbitrum.io/rpc" },
+  { name: "Optimism", chainId: "10", symbol: "ETH", rpcUrl: "https://mainnet.optimism.io" },
+  { name: "Polygon", chainId: "137", symbol: "POL", rpcUrl: "https://polygon-rpc.com" },
+  { name: "Base", chainId: "8453", symbol: "ETH", rpcUrl: "https://mainnet.base.org" },
+  { name: "BNB Chain", chainId: "56", symbol: "BNB", rpcUrl: "https://bsc-dataseed.binance.org" },
+];
+
+function selectPresetChainlist(preset: (typeof popularChainlistPresets)[number]) {
+  draft.value = {
+    name: preset.name,
+    chainId: preset.chainId,
+    symbol: preset.symbol,
+    rpcUrl: preset.rpcUrl,
+    explorerUrl: "",
+    environment: "mainnet",
+  };
+  formErrors.value = [];
+  validation.value = null;
+  void runRpcValidation();
 }
 
 function selectCandidateRpc(url: string) {
@@ -655,36 +703,33 @@ function removeNetwork(id: string) {
 
 <template>
   <WalletChrome
-    eyebrow="Networks"
-    title="自定义网络与 RPC 管理"
-    subtitle="支持从 Chainlist 实时选择公共 RPC 节点、快速测速比对，并在保存前自动校验 Chain ID 和区块连通性。"
+    eyebrow="多链网络"
+    title="网络管理"
+    subtitle="管理多链网络与 RPC 节点，支持从 Chainlist 检索与测速比对"
+    :show-nav="false"
   >
-    <section class="status-grid">
-      <SectionCard title="Active" description="当前生效网络" :tone="activeNetworkTone">
+    <template #actions>
+      <RouterLink class="button button--ghost button--small" to="/settings">
+        返回设置
+      </RouterLink>
+    </template>
+
+    <section class="status-grid status-grid--2">
+      <SectionCard title="当前生效" description="当前激活网络" :tone="activeNetworkTone">
         <p class="metric-value">{{ activeNetwork.name }}</p>
         <p>{{ activeNetworkEnvironmentLabel }} · {{ formatChainLabel(activeNetwork.chainId) }}</p>
       </SectionCard>
 
-      <SectionCard title="Total Networks" description="预置 + 自定义">
-        <p class="metric-value">{{ allNetworks.length }}</p>
+      <SectionCard title="网络概览" description="多链网络与节点状态">
+        <p class="metric-value">{{ allNetworks.length }} 个网络</p>
         <p>{{ mainnetNetworkCount }} 正式网 · {{ testnetNetworkCount }} 测试网</p>
-        <p>{{ presetNetworkCount }} preset · {{ customNetworkCount }} custom</p>
-      </SectionCard>
-
-      <SectionCard title="Validation" description="当前表单校验状态" :tone="validationTone">
-        <p class="metric-value">{{ validationStatusLabel }}</p>
-        <p>{{ validation?.message ?? "保存前会自动执行 RPC 校验" }}</p>
-      </SectionCard>
-
-      <SectionCard title="RPC" description="当前激活 RPC">
-        <p class="metric-value">{{ activeNetwork.symbol }}</p>
-        <p>{{ activeNetwork.rpcUrl }}</p>
+        <p>{{ isRpcOverridden(activeNetwork) ? "已覆盖自定义 RPC" : "预置官方 RPC" }}</p>
       </SectionCard>
     </section>
 
     <section class="page-grid page-grid--2">
       <SectionCard
-        title="Mainnet Networks"
+        title="正式网络"
         description="正式网与测试网分开展示，切换前先确认链环境。"
       >
         <p class="metric-value">{{ mainnetNetworkCount }} 正式网</p>
@@ -760,7 +805,7 @@ function removeNetwork(id: string) {
       </SectionCard>
 
       <SectionCard
-        title="Testnet Networks"
+        title="测试网络"
         description="测试网资产仅用于开发和验证，不应当作正式网余额。"
         tone="warning"
       >
@@ -801,11 +846,11 @@ function removeNetwork(id: string) {
                 {{ activeNetwork.id === network.id ? "当前使用" : "切换到此网络" }}
               </button>
               <button
-                class="button button--ghost button--small"
+                class="button button--secondary button--small"
                 type="button"
                 @click="startRpcOverrideEdit(network)"
               >
-                更改 RPC
+                更改 RPC (Chainlist)
               </button>
               <button
                 v-if="isRpcOverridden(network)"
@@ -839,20 +884,24 @@ function removeNetwork(id: string) {
 
     <section class="page-grid page-grid--2">
       <SectionCard
-        title="Change RPC URL"
+        title="Chainlist 节点与 RPC 选配"
         description="支持从 Chainlist 实时选择公共 RPC 节点或填入自定义节点，保存前会自动校验 Chain ID。"
         :tone="rpcValidationTone"
       >
         <template v-if="rpcEditingNetwork">
           <form class="form-grid" @submit.prevent="submitRpcOverride">
-            <label class="field">
-              <span>网络</span>
-              <input :value="rpcEditingNetwork.name" disabled />
-            </label>
-            <label class="field">
-              <span>Chain ID</span>
-              <input :value="formatChainLabel(rpcEditingNetwork.chainId)" disabled />
-            </label>
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px 14px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); margin-bottom: 8px;">
+              <div>
+                <span class="helper-text" style="display: block; font-size: 0.72rem;">目标网络</span>
+                <strong style="font-size: 0.95rem;">{{ rpcEditingNetwork.name }}</strong>
+              </div>
+              <div class="chip-row">
+                <span class="status-chip">{{ formatChainLabel(rpcEditingNetwork.chainId) }}</span>
+                <span :class="['status-chip', environmentChipClass(rpcEditingNetwork)]">
+                  {{ networkEnvironmentLabel(rpcEditingNetwork) }}
+                </span>
+              </div>
+            </div>
 
             <!-- Chainlist Candidates Section -->
             <div class="rpc-candidate-section">
@@ -940,7 +989,7 @@ function removeNetwork(id: string) {
             </div>
 
             <label class="field">
-              <span>当前选定 / 自定义 RPC URL</span>
+              <span>选定节点或自定义端点</span>
               <input v-model="rpcDraft" placeholder="https://rpc.example.org" />
             </label>
 
@@ -1006,6 +1055,22 @@ function removeNetwork(id: string) {
               @input="handleChainlistSearch"
             />
           </label>
+
+          <!-- Quick Chainlist Presets -->
+          <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 6px;">
+            <span style="font-size: 0.74rem; color: var(--text-muted);">Chainlist 热门:</span>
+            <button
+              v-for="preset in popularChainlistPresets"
+              :key="preset.chainId"
+              class="status-chip"
+              type="button"
+              style="cursor: pointer; padding: 2px 7px; font-size: 0.72rem;"
+              @click="selectPresetChainlist(preset)"
+            >
+              + {{ preset.name }}
+            </button>
+          </div>
+
           <div v-if="chainlistSearchResults.length > 0" class="chainlist-search-results">
             <div
               v-for="chain in chainlistSearchResults"
@@ -1099,7 +1164,7 @@ function removeNetwork(id: string) {
     </section>
 
     <section class="page-grid page-grid--2">
-      <SectionCard title="RPC Validation Detail" description="最近一次链上校验结果" :tone="validationTone">
+      <SectionCard title="RPC 校验详情" description="最近一次链上校验结果" :tone="validationTone">
         <template v-if="validation">
           <div class="key-value-list">
             <div class="key-value-row">

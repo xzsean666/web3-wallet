@@ -3,22 +3,80 @@
 ## 当前任务
 
 - 状态：`completed`
-- 任务：移除 biometric MVP 要求，补齐 Tauri 状态持久化，并完成 Linux / Tauri 编译闭环
+- 任务：全面走查所有 UI 与业务逻辑（简约、易用深度重构），执行缺陷排查、全量测试验证，准备 Git Commit、Push 并触发 GitHub Actions CI/CD Android APK 构建
 - 负责人：AI Agent
 
 ## 时间
 
-- 开始时间：2026-04-06 16:05:00 CST
-- 最后更新时间：2026-04-06 17:35:24 CST
+- 开始时间：2026-11-07 12:24:00 CST
+- 最后更新时间：2026-11-07 13:18:00 CST
 
-## 目标
+## 全面走查与优化重点清单
 
-- 将生物识别从 MVP 必做项中移出
-- 把 `network / custom token / recent activity / address book` 从 WebView `localStorage` 迁到 Tauri 数据层
-- 保持浏览器预览模式兼容，不破坏现有 store / page 结构
-- 补齐仍缺的验证闭环，确保 `build / unit / e2e / coverage` 全绿
-- 收口 ERC20 手动添加页的阻断式合约校验
-- 补齐当前 Ubuntu 上 Tauri / WebKitGTK 系统依赖，并让 `cargo check / cargo test` 在本机通过
+1. **钱包主页与导航降噪 (`WalletHomePage.vue` & `WalletChrome.vue`)**：
+   - 彻底消除主页顶部与 `WalletChrome` 紧挨着的重复账号头像/名字/地址双层显示。
+   - 聚焦核心资产余额与网络状态，精炼测试网标签与同步状态，在主卡片增加地址一键复制交互反馈。
+2. **转账发送页极致精炼 (`SendPage.vue`)**：
+   - 移除常驻在表单核心区域占满 3 行的“扫码内容”文本框及“解析扫码内容”按钮，降低视觉噪音。
+   - 保留扫码相机、剪贴板粘贴与智能识别，地址输入框直接支持 EIP-681 URI 粘贴或输入时自动解析，恢复清爽高效的转账输入体验。
+3. **网络管理中心体系化精简 (`NetworksPage.vue`)**：
+   - 彻底移除顶部堆叠的 4 张英文/技术指标卡片（`Active`、`Total Networks`、`Validation: Not Checked`、`RPC`），释放半屏空间。
+   - 全面中文化：`Mainnet Networks` -> `正式网络`，`Testnet Networks` -> `测试网络`，`Validation` 状态标签中文化。
+4. **交易详情页高端极简重构 (`TransactionDetailPage.vue`)**：
+   - 消除散乱且数据重复的 6 张中英文调试卡片（`Hash`、`Status`、`Timeline`、`Decoded Action`、`Raw Transaction`、`Fees`）。
+   - 重构为现代 Web3 钱包（如 Phantom/Rainbow）标准的交易详情卡：顶部核心金额与状态、核心信息列表、技术细节折叠面板、底部区块浏览器跳转与返回。
+5. **常用地址簿页面重构 (`AddressBookPage.vue`)**：
+   - 彻底移除顶部 4 张冗余英文指标卡片（`Current Network`、`Network Contacts`、`All Contacts`、`Latest Update`）。
+   - 页面标题与分类全面中文化，联系人列表与操作更简洁高效。
+6. **添加代币与资产详情体验优化 (`AddTokenPage.vue` & `TokenDetailPage.vue`)**：
+   - `AddTokenPage.vue`：输入合法合约地址时自动触发元数据读取（带防抖），免去必须手动点击按钮的繁琐，同时保持按钮兼容。
+   - 中文化 Eyebrow 标签，优化视觉层级。
+7. **验证结果**：
+   - Rust 底层测试：12/12 全部通过（100%）。
+   - TypeScript 生产构建：`pnpm build`（vue-tsc 严格类型检查 + Vite 打包）0 报错通过。
+   - 单元测试：26 个文件、151 个测试全部通过（100%）。
+   - Playwright 端到端测试：10 个用例全部通过（100%）。
+   - 全量更新 `docs/screenshots/` 下 22 张高清实际运行截图。
+
+---
+
+## 历史任务记录
+- 任务：根据用户反馈对欢迎页、备份页、钱包主页、账号管理页进行 UI 排版深度优化，并实现生物识别完整解锁及 3x3 手势连线多方式解锁（已完成）
+
+
+## 历史任务记录
+5. `[x]` 执行测试并在 22 个核心业务场景下进行截图，保存至 `docs/screenshots/`：
+   - `01-welcome-page.png`：欢迎落地页
+   - `02-create-wallet.png`：创建钱包表单
+   - `03-create-wallet-validation.png`：创建密码校验报错提示
+   - `04-backup-phrase-locked.png`：助记词离线备份保护页
+   - `05-backup-phrase-revealed.png`：12 助记词药丸卡片与抄写确认
+   - `06-wallet-home.png`：钱包资产主页（1.5 ETH 原生币、块高、操作栏）
+   - `07-receive-page.png`：收款二维码与地址展示
+   - `08-send-page-native.png`：转账发送页与实时 Gas 预估
+   - `09-send-confirmation.png`：发送确认摘要卡片
+   - `10-add-token.png`：添加自定义代币及元数据自动回填（MUSD 精度 6）
+   - `11-wallet-home-with-token.png`：主页资产列表展示自定义代币
+   - `12-token-detail-native.png`：原生币 (ETH) 资产详情页
+   - `13-token-detail-erc20.png`：ERC20 代币 (MUSD) 资产详情页
+   - `14-activity-page.png`：交易活动记录列表与状态胶囊
+   - `15-transaction-detail.png`：链上交易确认详情看板
+   - `16-networks-page.png`：多链网络管理中心（正式网与测试网分区）
+   - `17-add-custom-network.png`：添加自定义 EVM 网络表单
+   - `18-accounts-page.png`：多账号管理与 HD 派生
+   - `19-address-book.png`：常用收款人地址簿管理
+   - `20-settings-page.png`：钱包设置中心
+   - `21-lock-unlock-page.png`：安全锁屏与错误密码拦截
+   - `22-import-wallet-page.png`：助记词/私钥导入页面
+6. `[x]` 编写 `docs/screenshots/README.md` 图文画廊与使用指南，并在 `README.md` 建立索引。
+7. `[x]` 执行全量 `pnpm test:e2e`（10/10 passed）与 `pnpm test:unit`（141/141 passed）验收。
+
+## 验证结果
+
+- E2E 测试：`10 passed (51.8s)`
+- 单元测试：`24 passed (24), 141 passed (141)`
+- 截图产物：`docs/screenshots/` 目录下共 22 张 PNG 截图文件，总大小约 2.3MB。
+
 
 ## 范围
 

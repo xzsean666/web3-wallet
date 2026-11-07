@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
-import SectionCard from "../../components/SectionCard.vue";
 import { createWallet, isTauriWalletRuntime } from "../../services/walletBridge";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { useSessionStore } from "../../stores/session";
@@ -86,93 +85,73 @@ async function submitCreateWallet() {
 </script>
 
 <template>
-  <main class="page-shell">
-    <section class="marketing-hero marketing-hero--compact">
-      <div class="hero-copy">
-        <p class="eyebrow">{{ isAddAccountMode ? "Create Account" : "Create Wallet" }}</p>
-        <h1>{{ isAddAccountMode ? "新账号也走完整的本地创建和备份流程。" : "先把创建流程收稳，再往资产和发送走。" }}</h1>
-        <p class="subtitle">
-          {{
-            isAddAccountMode
-              ? "这里会创建一个新的本地账号档案，并在下一步展示助记词。完成备份确认后，新账号会成为当前激活账号。"
-              : "这一页只负责创建本地钱包基础资料和解锁密码。助记词会在下一步展示，你必须完成备份确认后才会进入首页。"
-          }}
+  <main class="page-shell" style="justify-content: center;">
+    <section class="section-card" style="padding: 24px;">
+      <header class="section-card__header">
+        <div>
+          <h2>{{ isAddAccountMode ? "创建新账号" : "创建新钱包" }}</h2>
+          <p>{{ isAddAccountMode ? "设置新账号名称及本地解锁密码" : "第 1 步：设置钱包名称与本地解锁密码" }}</p>
+        </div>
+        <RouterLink class="button button--ghost button--small" :to="backTarget">返回</RouterLink>
+      </header>
+
+      <form class="form-grid" @submit.prevent="submitCreateWallet">
+        <label class="field">
+          <span>{{ isAddAccountMode ? "账号名称" : "钱包名称" }}</span>
+          <input
+            v-model="walletLabel"
+            autocomplete="off"
+            :disabled="previewSecretFlowBlocked"
+            :placeholder="isAddAccountMode ? `Account ${sessionStore.accountCount + 1}` : 'Primary Wallet'"
+          />
+        </label>
+
+        <label class="field">
+          <span>设置密码</span>
+          <input
+            v-model="password"
+            autocomplete="new-password"
+            :disabled="previewSecretFlowBlocked"
+            type="password"
+            placeholder="不少于 8 位字符"
+          />
+        </label>
+
+        <label class="field">
+          <span>确认密码</span>
+          <input
+            v-model="confirmPassword"
+            autocomplete="new-password"
+            :disabled="previewSecretFlowBlocked"
+            type="password"
+            placeholder="再次输入解锁密码"
+          />
+        </label>
+
+        <label class="toggle-row">
+          <input v-model="enableBiometric" :disabled="previewSecretFlowBlocked" type="checkbox" />
+          <span>启用生物识别快捷解锁</span>
+        </label>
+
+        <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
+        <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
+          {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
         </p>
+
+        <div class="form-actions" style="margin-top: 8px;">
+          <button
+            :disabled="isSubmitting || previewSecretFlowBlocked || !password || !confirmPassword"
+            class="button button--primary"
+            type="submit"
+          >
+            {{ isSubmitting ? "正在生成助记词..." : isAddAccountMode ? "下一步：备份助记词" : "下一步：生成并备份助记词" }}
+          </button>
+        </div>
+      </form>
+
+      <div style="padding: 12px; border-radius: var(--radius-sm); background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.2); font-size: 0.78rem; color: #c7d2fe;">
+        <strong>安全提示：</strong> 下一步将展示 12 个英文助记词，助记词是恢复钱包资产的唯一凭证，切勿截屏或在线分享。
       </div>
-      <SectionCard title="安全提醒" :description="isAddAccountMode ? '新增账号同样只处理本地恢复材料' : '创建阶段只处理本地钱包与恢复材料'">
-        <ul class="bullet-list">
-          <li>钱包密码用于后续解锁</li>
-          <li>助记词只会在备份页展示一次</li>
-          <li>私钥类数据不会进入 Pinia</li>
-        </ul>
-      </SectionCard>
-    </section>
-
-    <section class="page-grid page-grid--2">
-      <SectionCard :title="isAddAccountMode ? 'Create Account' : 'Create'" description="填写基础信息">
-        <form class="form-grid" @submit.prevent="submitCreateWallet">
-          <label class="field">
-            <span>{{ isAddAccountMode ? "账号名称" : "钱包名称" }}</span>
-            <input
-              v-model="walletLabel"
-              autocomplete="off"
-              :disabled="previewSecretFlowBlocked"
-              :placeholder="isAddAccountMode ? `Account ${sessionStore.accountCount + 1}` : 'Primary Wallet'"
-            />
-          </label>
-
-          <label class="field">
-            <span>钱包密码</span>
-            <input
-              v-model="password"
-              autocomplete="new-password"
-              :disabled="previewSecretFlowBlocked"
-              type="password"
-              placeholder="至少 8 位"
-            />
-          </label>
-
-          <label class="field">
-            <span>确认密码</span>
-            <input
-              v-model="confirmPassword"
-              autocomplete="new-password"
-              :disabled="previewSecretFlowBlocked"
-              type="password"
-              placeholder="再次输入密码"
-            />
-          </label>
-
-          <label class="toggle-row">
-            <input v-model="enableBiometric" :disabled="previewSecretFlowBlocked" type="checkbox" />
-            <span>默认开启生物识别解锁入口</span>
-          </label>
-
-          <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>
-          <p v-else-if="previewSecretFlowBlocked" class="helper-text helper-text--error">
-            {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
-          </p>
-
-          <div class="form-actions">
-            <button
-              :disabled="isSubmitting || previewSecretFlowBlocked"
-              class="button button--primary"
-              type="submit"
-            >
-              {{ isSubmitting ? "正在生成助记词..." : isAddAccountMode ? "继续并创建新账号" : "继续并生成助记词" }}
-            </button>
-            <RouterLink class="button button--ghost" :to="backTarget">返回</RouterLink>
-          </div>
-        </form>
-      </SectionCard>
-
-      <SectionCard title="What Happens Next" :description="isAddAccountMode ? '新增账号后的流程' : '创建后的流程'">
-        <ol class="ordered-list">
-          <li>生成 12 个英文助记词</li>
-          <li>展示备份页并要求人工确认</li>
-          <li>{{ isAddAccountMode ? "完成后切换到新账号并继续使用钱包" : "完成后进入资产首页并继续使用钱包" }}</li>
-        </ol>
-      </SectionCard>
     </section>
   </main>
 </template>

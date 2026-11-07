@@ -107,7 +107,7 @@ onBeforeUnmount(resetCopyState);
             <span v-else-if="copyState === 'error'" class="status-chip status-chip--danger">复制失败</span>
           </div>
 
-          <p class="address-block">{{ primaryAddress }}</p>
+          <p class="address-block" title="点击复制完整地址" @click="copyAddress">{{ primaryAddress }}</p>
 
           <div class="form-actions">
             <button class="button button--primary" type="button" @click="copyAddress">复制地址</button>

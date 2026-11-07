@@ -19,7 +19,7 @@ const portfolioStore = usePortfolioStore();
 const walletStore = useWalletStore();
 
 const { activeNetwork, allNetworks } = storeToRefs(networksStore);
-const { accountCount, activeAccountId, primaryAddress, walletLabel } = storeToRefs(sessionStore);
+const { accountCount, activeAccountId, primaryAddress } = storeToRefs(sessionStore);
 const { recentActivity, trackedTokens } = storeToRefs(walletStore);
 
 const tokensForActiveNetwork = computed(() =>
@@ -31,14 +31,6 @@ const snapshot = computed(() =>
 const submittedActivity = computed(() =>
   recentActivity.value.filter(isActivityForCurrentAccount),
 );
-const accountDisplayLabel = computed(() =>
-  walletLabel.value || shortenAddress(primaryAddress.value) || "当前账户",
-);
-const accountMonogram = computed(() => {
-  const source = walletLabel.value?.trim() || activeNetwork.value.symbol || "W";
-
-  return source.slice(0, 1).toUpperCase();
-});
 
 const nativeAsset = computed(() => ({
   name: `${activeNetwork.value.name} Native Token`,
@@ -78,7 +70,19 @@ const homeSyncLabel = computed(() => {
 });
 let activitySyncTimer: number | null = null;
 const isRefreshingHome = ref(false);
+const isAddressCopied = ref(false);
 let portfolioRefreshRequestId = 0;
+
+async function copyHomeAddress() {
+  if (!primaryAddress.value) return;
+  try {
+    await navigator.clipboard.writeText(primaryAddress.value);
+    isAddressCopied.value = true;
+    setTimeout(() => {
+      isAddressCopied.value = false;
+    }, 2000);
+  } catch {}
+}
 
 function resolveActivityNetwork(item: ActivityItem) {
   if (item.networkId) {
@@ -245,56 +249,96 @@ watch([pendingActivities, allNetworks], () => {
 
 <template>
   <WalletChrome
-    :compact-nav="true"
+    :compact-nav="false"
     :show-hero="false"
-    :show-nav="false"
+    :show-nav="true"
   >
     <section class="section-card home-balance-card">
       <div class="home-balance-card__top">
-        <div class="wallet-mini-profile">
-          <span class="wallet-mini-profile__badge">{{ accountMonogram }}</span>
-          <div>
-            <strong>{{ accountDisplayLabel }}</strong>
-            <p>{{ shortenAddress(primaryAddress) }}</p>
-          </div>
+        <div class="home-balance-card__network">
+          <span :class="['meta-pill', isActiveTestnet ? 'meta-pill--testnet' : '']">
+            {{ activeNetwork.name }}
+          </span>
+          <span :class="['status-chip', isActiveTestnet ? 'status-chip--warning' : 'status-chip--accent']">
+            {{ activeNetworkEnvironmentLabel }}
+          </span>
+          <span class="home-balance-card__meta">{{ homeSyncLabel }}</span>
+          <span v-if="snapshot.latestBlock" class="home-balance-card__meta">块高 {{ snapshot.latestBlock }}</span>
         </div>
         <div class="home-balance-card__controls">
-          <button
-            class="button button--ghost button--small"
-            type="button"
-            :disabled="isRefreshingHome"
-            @click="refreshHomeContext"
-          >
-            {{ isRefreshingHome ? "同步中" : "刷新" }}
+          <button class="button button--ghost button--small" type="button" @click="lockNow" title="锁定钱包">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+            </svg>
+            锁定
           </button>
-          <button class="button button--ghost button--small" type="button" @click="lockNow">锁定</button>
         </div>
       </div>
 
-      <div class="home-balance-card__network">
-        <span :class="['meta-pill', isActiveTestnet ? 'meta-pill--testnet' : '']">
-          {{ activeNetwork.name }}
-        </span>
-        <span :class="['status-chip', isActiveTestnet ? 'status-chip--warning' : 'status-chip--accent']">
-          {{ activeNetworkEnvironmentLabel }}
-        </span>
-        <span class="home-balance-card__meta">{{ homeSyncLabel }}</span>
-        <span v-if="snapshot.latestBlock" class="home-balance-card__meta">块高 {{ snapshot.latestBlock }}</span>
-      </div>
       <div v-if="isActiveTestnet" class="home-testnet-banner">
         <strong>测试网</strong>
         <span>当前显示的是测试网络资产，请勿当作正式网余额。</span>
       </div>
-      <p class="home-balance-card__amount">{{ formatTokenAmount(nativeAsset.balance) }} {{ nativeAsset.symbol }}</p>
 
-      <p class="home-balance-card__eyebrow">{{ visibleAssetCount }} 项资产</p>
+      <div style="text-align: center; margin: 10px 0 6px;">
+        <p class="home-balance-card__amount" style="margin: 0; font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em;">
+          {{ formatTokenAmount(nativeAsset.balance) }} {{ nativeAsset.symbol }}
+        </p>
+        <button
+          v-if="primaryAddress"
+          type="button"
+          class="home-balance-card__address-btn"
+          style="margin-top: 8px; display: inline-flex; align-items: center; gap: 5px; background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: var(--radius-full); padding: 3px 10px; font-family: var(--font-mono); font-size: 0.74rem; color: var(--text-secondary); cursor: pointer; transition: all 0.2s;"
+          :title="primaryAddress"
+          @click="copyHomeAddress"
+        >
+          <span>{{ shortenAddress(primaryAddress) }}</span>
+          <span v-if="isAddressCopied" style="color: var(--accent-success); font-weight: 600;">已复制</span>
+          <svg v-else width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+          </svg>
+        </button>
+      </div>
 
       <div class="home-quick-actions">
-        <RouterLink class="button button--secondary" to="/wallet/send">发送</RouterLink>
-        <RouterLink class="button button--secondary" :to="{ name: 'wallet-send', query: { scan: '1' } }">扫码付款</RouterLink>
-        <RouterLink class="button button--secondary" to="/wallet/receive">收款</RouterLink>
-        <RouterLink class="button button--ghost" to="/wallet/activity">活动</RouterLink>
-        <RouterLink class="button button--ghost" to="/settings">设置</RouterLink>
+        <RouterLink class="button button--secondary" to="/wallet/send">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+            <line x1="7" y1="17" x2="17" y2="7" />
+            <polyline points="7 7 17 7 17 17" />
+          </svg>
+          发送
+        </RouterLink>
+        <RouterLink class="button button--secondary" to="/wallet/receive">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+            <line x1="17" y1="7" x2="7" y2="17" />
+            <polyline points="17 17 7 17 7 7" />
+          </svg>
+          收款
+        </RouterLink>
+        <RouterLink class="button button--secondary" :to="{ name: 'wallet-send', query: { scan: '1' } }">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2" />
+            <path d="M17 3h2a2 2 0 0 1 2 2v2" />
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2" />
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2" />
+          </svg>
+          扫码
+        </RouterLink>
+        <button
+          class="button button--secondary"
+          type="button"
+          :disabled="isRefreshingHome"
+          @click="refreshHomeContext"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 4px;">
+            <polyline points="23 4 23 10 17 10" />
+            <polyline points="1 20 1 14 7 14" />
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+          </svg>
+          {{ isRefreshingHome ? "同步中" : "刷新" }}
+        </button>
       </div>
 
       <p v-if="snapshot.error" class="helper-text helper-text--error">{{ snapshot.error }}</p>
@@ -305,11 +349,8 @@ watch([pendingActivities, allNetworks], () => {
         <template #header>
           <div class="section-card__actions">
             <span class="section-card__meta">{{ assetSummaryLabel }}</span>
-            <RouterLink class="button button--ghost button--small" :to="{ name: 'wallet-send', query: { scan: '1' } }">
-              扫码
-            </RouterLink>
             <RouterLink class="button button--ghost button--small" to="/wallet/token/add">
-              添加
+              + 添加代币
             </RouterLink>
           </div>
         </template>

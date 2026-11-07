@@ -145,9 +145,9 @@ watch([pendingActivities, allNetworks], () => {
 
 <template>
   <WalletChrome
-    :compact-nav="true"
+    :compact-nav="false"
     :show-hero="false"
-    :show-nav="false"
+    :show-nav="true"
   >
     <SectionCard class="simple-sheet" title="活动">
       <template #header>
@@ -155,22 +155,19 @@ watch([pendingActivities, allNetworks], () => {
           <span class="section-card__meta">
             {{ lastCheckedAt ? `已刷新 ${formatRelativeTime(lastCheckedAt)}` : `${submittedActivity.length} 条` }}
           </span>
+          <button
+            class="button button--secondary button--small"
+            type="button"
+            :disabled="isRefreshing"
+            @click="refreshActivity"
+          >
+            {{ isRefreshing ? "刷新中" : "刷新" }}
+          </button>
           <RouterLink class="button button--ghost button--small" to="/wallet">
             返回
           </RouterLink>
         </div>
       </template>
-
-      <div class="form-actions form-actions--compact">
-        <button
-          class="button button--secondary button--small"
-          type="button"
-          :disabled="isRefreshing"
-          @click="refreshActivity"
-        >
-          {{ isRefreshing ? "刷新中" : "刷新" }}
-        </button>
-      </div>
 
       <div v-if="submittedActivity.length" class="token-list">
         <component

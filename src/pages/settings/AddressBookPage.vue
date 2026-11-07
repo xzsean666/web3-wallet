@@ -7,7 +7,7 @@ import WalletChrome from "../../components/WalletChrome.vue";
 import { useNetworksStore } from "../../stores/networks";
 import { useWalletStore } from "../../stores/wallet";
 import type { AddressBookEntry } from "../../types/wallet";
-import { formatDateTime, formatRelativeTime, shortenAddress } from "../../utils/format";
+import { formatRelativeTime, shortenAddress } from "../../utils/format";
 
 const networksStore = useNetworksStore();
 const walletStore = useWalletStore();
@@ -22,9 +22,6 @@ const formErrors = ref<string[]>([]);
 const feedback = ref<null | { tone: "success" | "error"; message: string }>(null);
 
 const contacts = computed(() => walletStore.contactsForNetwork(activeNetwork.value.id));
-const newestContactTimestamp = computed(
-  () => contacts.value[0]?.lastUsedAt ?? contacts.value[0]?.updatedAt ?? null,
-);
 const activeNetworkContactCount = computed(() => contacts.value.length);
 const currentDraftMatch = computed(() =>
   walletStore.findAddressBookEntry(activeNetwork.value.id, contactAddress.value),
@@ -89,39 +86,32 @@ function deleteContact(entry: AddressBookEntry) {
 
 <template>
   <WalletChrome
-    eyebrow="Address Book"
-    title="正式地址簿让发送页不再只靠临时记录。"
-    subtitle="联系人标签、备注和网络归属只保存在当前设备的本地 UI 状态里，不会进入链上或云端。"
+    eyebrow="常用联系人"
+    title="地址簿"
+    subtitle="管理常用收款地址与联系人备注，转账时一键填入"
+    :show-nav="false"
   >
     <template #actions>
-      <RouterLink class="button button--secondary" :to="{ name: 'wallet-send' }">去发送页</RouterLink>
-      <RouterLink class="button button--ghost" to="/settings">返回设置</RouterLink>
+      <RouterLink class="button button--secondary button--small" :to="{ name: 'wallet-send' }">去转账</RouterLink>
+      <RouterLink class="button button--ghost button--small" to="/settings">返回设置</RouterLink>
     </template>
 
-    <section class="status-grid">
-      <SectionCard title="Current Network" description="当前正在管理的网络">
-        <p class="metric-value">{{ activeNetwork.name }}</p>
-        <p>Chain ID {{ activeNetwork.chainId }}</p>
-      </SectionCard>
-
-      <SectionCard title="Network Contacts" description="当前网络联系人数量" tone="accent">
-        <p class="metric-value">{{ activeNetworkContactCount }}</p>
-        <p>{{ activeNetwork.symbol }} 地址簿</p>
-      </SectionCard>
-
-      <SectionCard title="All Contacts" description="当前设备本地联系人总数">
-        <p class="metric-value">{{ addressBookCount }}</p>
-        <p>仅保存在本地 UI 状态</p>
-      </SectionCard>
-
-      <SectionCard title="Latest Update" description="最近一次联系人变更">
-        <p class="metric-value">{{ newestContactTimestamp ? formatRelativeTime(newestContactTimestamp) : "N/A" }}</p>
-        <p>{{ formatDateTime(newestContactTimestamp) }}</p>
-      </SectionCard>
+    <!-- Top Compact Network Indicator -->
+    <section class="section-card" style="padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="meta-pill">{{ activeNetwork.name }}</span>
+        <span style="font-size: 0.8rem; color: var(--text-secondary);">
+          当前网络共 <strong>{{ activeNetworkContactCount }}</strong> 位联系人
+        </span>
+      </div>
+      <span style="font-size: 0.74rem; color: var(--text-muted);">
+        本地总计 {{ addressBookCount }} 个联系人
+      </span>
     </section>
 
     <section class="page-grid page-grid--2">
-      <SectionCard title="Save Contact" description="当前网络下的新建或更新联系人">
+      <!-- Add / Edit Contact Form -->
+      <SectionCard :title="currentDraftMatch ? '编辑联系人' : '添加联系人'" description="设置收款地址别名与备注">
         <form class="form-grid" @submit.prevent="saveContact">
           <label class="field">
             <span>联系人名称</span>
@@ -138,7 +128,7 @@ function deleteContact(entry: AddressBookEntry) {
             <textarea
               v-model="contactNote"
               placeholder="例如：打款专用地址 / 交易所充值地址"
-              rows="3"
+              rows="2"
             />
           </label>
 
@@ -166,34 +156,40 @@ function deleteContact(entry: AddressBookEntry) {
         </form>
       </SectionCard>
 
-      <SectionCard title="Usage Notes" description="MVP 阶段的地址簿边界">
-        <div class="card-stack">
-          <p class="helper-text">联系人只保存在当前设备的本地 UI 状态，不会写入链上，也不会触碰助记词、私钥或密码。</p>
-          <p class="helper-text">地址簿按网络拆分，避免同一 EVM 地址在不同网络下被误当成同一业务目标。</p>
-          <p class="helper-text">从这里或发送页选中联系人后，会直接回填收款地址；金额仍需要你手动确认。</p>
+      <!-- Usage Notes Card -->
+      <SectionCard title="安全提示" description="本地加密与离线存储">
+        <div class="card-stack" style="gap: 8px;">
+          <p class="helper-text">联系人仅保存在当前设备本地，不会上传至任何服务器，也绝不触碰私钥或密码。</p>
+          <p class="helper-text">地址簿按网络隔离，避免相同地址在不同链网络下被误发。</p>
+          <p class="helper-text">从列表点击“发送”可直接回填收款地址，转账金额仍需在发送页手动确认。</p>
         </div>
-        <div class="form-actions">
-          <RouterLink class="button button--secondary" :to="{ name: 'wallet-send' }">使用地址簿发送</RouterLink>
-          <RouterLink class="button button--ghost" to="/settings/networks">切换网络</RouterLink>
+        <div class="form-actions" style="margin-top: 10px;">
+          <RouterLink class="button button--secondary button--small" :to="{ name: 'wallet-send' }">去发送页</RouterLink>
+          <RouterLink class="button button--ghost button--small" to="/settings/networks">切换网络</RouterLink>
         </div>
       </SectionCard>
     </section>
 
+    <!-- Saved Contacts List -->
     <section class="page-grid page-grid--1">
-      <SectionCard title="Saved Contacts" :description="`${activeNetwork.name} 网络下的已保存联系人`">
+      <SectionCard title="已保存联系人" :description="`${activeNetwork.name} 网络下的联系人列表`">
         <div v-if="contacts.length" class="token-list">
           <article v-for="entry in contacts" :key="entry.id" class="token-row">
             <div class="token-row__content">
-              <strong>{{ entry.label }}</strong>
-              <p class="token-row__address">{{ shortenAddress(entry.address) }} · {{ entry.address }}</p>
-              <p v-if="entry.note">{{ entry.note }}</p>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <div style="width: 28px; height: 28px; border-radius: var(--radius-full); background: linear-gradient(135deg, #6366f1, #06b6d4); display: grid; place-items: center; color: #fff; font-size: 0.75rem; font-weight: 700;">
+                  {{ entry.label.slice(0, 1).toUpperCase() }}
+                </div>
+                <strong>{{ entry.label }}</strong>
+              </div>
+              <p class="token-row__address" style="margin-top: 4px;">{{ shortenAddress(entry.address) }} · {{ entry.address }}</p>
+              <p v-if="entry.note" class="helper-text" style="margin: 2px 0 0;">{{ entry.note }}</p>
             </div>
             <div class="token-row__meta">
               <strong class="token-row__timestamp">
                 {{ entry.lastUsedAt ? `${formatRelativeTime(entry.lastUsedAt)} 使用` : "未使用" }}
               </strong>
-              <span class="helper-text">更新于 {{ formatDateTime(entry.updatedAt) }}</span>
-              <div class="inline-actions">
+              <div class="inline-actions" style="margin-top: 4px;">
                 <RouterLink
                   class="button button--secondary button--small"
                   :to="{ name: 'wallet-send', query: { recipient: entry.address } }"
@@ -211,7 +207,7 @@ function deleteContact(entry: AddressBookEntry) {
           </article>
         </div>
         <p v-else class="empty-state">
-          当前网络还没有保存联系人。你可以先从发送页保存常用地址，或者直接在这里手动录入。
+          当前网络还没有保存联系人。在上方表单中录入，或从发送页自动保存。
         </p>
       </SectionCard>
     </section>

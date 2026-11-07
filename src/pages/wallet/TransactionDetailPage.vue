@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { useRoute } from "vue-router";
+import { RouterLink, useRoute } from "vue-router";
 import { storeToRefs } from "pinia";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
@@ -11,7 +11,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { useWalletStore } from "../../stores/wallet";
 import type { TransactionDetails } from "../../types/portfolio";
-import { formatActivityStatus, formatDateTime, formatTokenAmount } from "../../utils/format";
+import { formatDateTime, formatTokenAmount } from "../../utils/format";
 import { toSafeExternalUrl } from "../../utils/runtimeSafety";
 
 const route = useRoute();
@@ -41,8 +41,31 @@ const details = ref<TransactionDetails | null>(null);
 const isLoading = ref(false);
 const loadError = ref("");
 const externalLinkError = ref("");
+const isHashCopied = ref(false);
 let pollTimer: number | null = null;
 const safeExplorerUrl = computed(() => toSafeExternalUrl(details.value?.explorerUrl ?? null));
+
+async function copyTxHash() {
+  if (!txHash.value) return;
+  try {
+    await navigator.clipboard.writeText(txHash.value);
+    isHashCopied.value = true;
+    setTimeout(() => {
+      isHashCopied.value = false;
+    }, 2000);
+  } catch {}
+}
+
+function statusBadgeInfo() {
+  const status = details.value?.status ?? activityRecord.value?.status ?? "pending";
+  if (status === "success" || status === "complete") {
+    return { label: "交易已确认", chipClass: "status-chip--accent" };
+  }
+  if (status === "reverted") {
+    return { label: "交易已失败", chipClass: "status-chip--danger" };
+  }
+  return { label: "链上打包中", chipClass: "status-chip--warning" };
+}
 
 function isActivityForCurrentAccount(item: {
   id: string;
@@ -83,20 +106,6 @@ function activityTitle() {
     ...activityRecord.value,
     networkId: selectedNetwork.value.id,
   });
-}
-
-function activitySubtitle() {
-  if (!activityRecord.value) {
-    return null;
-  }
-
-  return walletStore.formatActivitySubtitle(
-    {
-      ...activityRecord.value,
-      networkId: selectedNetwork.value.id,
-    },
-    selectedNetwork.value.name,
-  );
 }
 
 function stopPolling() {
@@ -204,175 +213,141 @@ onBeforeUnmount(stopPolling);
 
 <template>
   <WalletChrome
-    eyebrow="Transaction Detail"
-    title="交易详情已经开始接近可用的 receipt。"
-    subtitle="当前会把 Native Transfer 和 ERC20 transfer(address,uint256) 解析成人类可读摘要，并补充本地提交时间、链上确认时间和实际网络费。"
+    eyebrow="交易活动"
+    title="交易详情"
+    subtitle="查看链上交易确认状态、转账金额及网络费用"
+    :show-nav="false"
   >
-    <section class="page-grid page-grid--2">
-      <SectionCard title="Hash" description="当前交易哈希">
-        <p class="address-block">{{ txHash }}</p>
-        <p class="helper-text">网络：{{ selectedNetwork.name }}</p>
-        <p v-if="activityRecord?.createdAt" class="helper-text">
-          本地提交：{{ formatDateTime(activityRecord.createdAt) }}
-        </p>
-        <p v-if="activityTitle()" class="helper-text">{{ activityTitle() }}</p>
-        <p v-if="activitySubtitle()" class="helper-text">{{ activitySubtitle() }}</p>
-        <p v-if="activityRecord?.recipientAddress" class="helper-text">
-          收款目标：{{ labeledAddress(activityRecord.recipientAddress) }}
-        </p>
-      </SectionCard>
+    <template #actions>
+      <RouterLink class="button button--ghost button--small" to="/wallet/activity">
+        返回活动
+      </RouterLink>
+      <RouterLink class="button button--ghost button--small" to="/wallet">
+        返回钱包
+      </RouterLink>
+    </template>
 
-      <SectionCard title="Status" description="链上状态">
-        <p v-if="isLoading" class="helper-text">正在从当前 RPC 拉取交易详情...</p>
-        <p v-else-if="loadError" class="helper-text helper-text--error">{{ loadError }}</p>
-        <template v-else-if="details">
-          <div class="chip-row">
-            <span
-              :class="[
-                'status-chip',
-                details.status === 'success'
-                  ? 'status-chip--accent'
-                  : details.status === 'reverted'
-                    ? 'status-chip--danger'
-                    : 'status-chip--warning',
-              ]"
-            >
-              {{ details.status }}
-            </span>
-            <span class="status-chip">Block {{ details.blockNumber ?? "Pending" }}</span>
-          </div>
-          <div class="key-value-list">
-            <div class="key-value-row">
-              <span>Nonce</span>
-              <strong>{{ details.nonce }}</strong>
-            </div>
-            <div class="key-value-row">
-              <span>确认时间</span>
-              <strong>{{ formatDateTime(details.confirmedAt) }}</strong>
-            </div>
-          </div>
-        </template>
-      </SectionCard>
+    <!-- Top Status & Amount Hero Card -->
+    <section class="section-card home-balance-card" style="padding: 24px 20px; text-align: center;">
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span :class="['status-chip', statusBadgeInfo().chipClass]">
+          {{ statusBadgeInfo().label }}
+        </span>
+        <span class="meta-pill">{{ selectedNetwork.name }}</span>
+      </div>
+
+      <div style="margin: 12px 0 6px;">
+        <p class="home-balance-card__amount" style="margin: 0; font-size: 2.1rem; font-weight: 800;">
+          {{
+            details?.summary?.amount
+              ? formatTokenAmount(details.summary.amount)
+              : (activityRecord?.amount ? formatTokenAmount(activityRecord.amount) : (details?.value ? formatTokenAmount(details.value) : "0"))
+          }}
+          {{ details?.summary?.symbol ?? activityRecord?.assetSymbol ?? selectedNetwork.symbol }}
+        </p>
+        <p style="margin: 4px 0 0; font-size: 0.85rem; color: var(--text-secondary);">
+          {{ details?.summary?.label ?? activityTitle() ?? "转账交易" }}
+        </p>
+      </div>
+
+      <p v-if="isLoading" class="helper-text" style="margin: 4px 0 0;">正在从 RPC 实时拉取最新状态...</p>
+      <p v-else-if="loadError" class="helper-text helper-text--error" style="margin: 4px 0 0;">{{ loadError }}</p>
     </section>
 
-    <section v-if="details || activityRecord" class="page-grid page-grid--2">
-      <SectionCard title="Timeline" description="本地记录与链上确认时间线">
+    <!-- Core Transaction Overview Card -->
+    <section class="page-grid page-grid--1">
+      <SectionCard title="交易概览">
         <div class="key-value-list">
           <div class="key-value-row">
-            <span>本地提交</span>
-            <strong>{{ formatDateTime(activityRecord?.createdAt) }}</strong>
-          </div>
-          <div class="key-value-row">
-            <span>最近活动状态</span>
-            <strong>{{ activityRecord ? formatActivityStatus(activityRecord.status) : "N/A" }}</strong>
-          </div>
-          <div v-if="activityTitle()" class="key-value-row">
-            <span>本地活动标题</span>
-            <strong>{{ activityTitle() }}</strong>
-          </div>
-          <div v-if="activitySubtitle()" class="key-value-row">
-            <span>本地活动摘要</span>
-            <strong>{{ activitySubtitle() }}</strong>
-          </div>
-          <div class="key-value-row">
-            <span>链上确认</span>
-            <strong>{{ details ? formatDateTime(details.confirmedAt) : "N/A" }}</strong>
-          </div>
-        </div>
-      </SectionCard>
-
-      <SectionCard v-if="details" title="Decoded Action" description="只解析 Native Transfer 与 ERC20 Transfer">
-        <p class="metric-value">{{ details.summary.label }}</p>
-        <div class="key-value-list">
-          <div v-if="details.summary.assetName" class="key-value-row">
-            <span>资产</span>
-            <strong>{{ details.summary.assetName }}</strong>
-          </div>
-          <div v-if="details.summary.amount" class="key-value-row">
-            <span>数量</span>
-            <strong>
-              {{ formatTokenAmount(details.summary.amount) }} {{ details.summary.symbol ?? "" }}
+            <span>交易状态</span>
+            <strong style="display: inline-flex; align-items: center; gap: 6px;">
+              <span :class="['status-chip', statusBadgeInfo().chipClass]" style="padding: 1px 6px; font-size: 0.68rem;">
+                {{ details?.status ?? activityRecord?.status ?? "pending" }}
+              </span>
+              <span>Block {{ details?.blockNumber ?? "打包中" }}</span>
             </strong>
           </div>
-          <div v-if="details.summary.recipientAddress" class="key-value-row">
-            <span>收款地址</span>
-            <strong>{{ labeledAddress(details.summary.recipientAddress) }}</strong>
-          </div>
-          <div v-if="details.summary.contractAddress" class="key-value-row">
-            <span>Token 合约</span>
-            <strong>{{ details.summary.contractAddress }}</strong>
-          </div>
-          <div v-if="details.summary.method" class="key-value-row">
-            <span>Method</span>
-            <strong>{{ details.summary.method }}</strong>
-          </div>
-        </div>
-        <p v-if="details.summary.kind === 'contract-call'" class="helper-text">
-          当前只会对 Native 转账和 ERC20 transfer 做受限解析，其他合约调用保持原始展示。
-        </p>
-      </SectionCard>
-
-      <SectionCard v-if="details" title="Raw Transaction" description="原始链上字段">
-        <div class="key-value-list">
           <div class="key-value-row">
-            <span>From</span>
+            <span>所属网络</span>
+            <strong>{{ selectedNetwork.name }} (Chain ID: {{ selectedNetwork.chainId }})</strong>
+          </div>
+          <div v-if="details?.from" class="key-value-row">
+            <span>发送方</span>
             <strong>{{ labeledAddress(details.from) }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Raw To</span>
-            <strong>{{ details.to ? labeledAddress(details.to) : "Contract Creation" }}</strong>
+            <span>接收方</span>
+            <strong>{{ labeledAddress(details?.summary?.recipientAddress ?? activityRecord?.recipientAddress ?? details?.to) }}</strong>
+          </div>
+          <div v-if="details?.summary?.contractAddress" class="key-value-row">
+            <span>Token 合约</span>
+            <strong>{{ details.summary.contractAddress }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Native Value</span>
-            <strong>{{ formatTokenAmount(details.value) }} {{ selectedNetwork.symbol }}</strong>
+            <span>实际网络费</span>
+            <strong>
+              {{ details?.actualNetworkFee ? `${formatTokenAmount(details.actualNetworkFee)} ${selectedNetwork.symbol}` : (details?.gasLimit ? "估算中" : "Pending") }}
+            </strong>
           </div>
-          <div class="key-value-row">
-            <span>Gas Limit</span>
-            <strong>{{ details.gasLimit }}</strong>
+          <div v-if="activityRecord?.createdAt" class="key-value-row">
+            <span>本地提交</span>
+            <strong>{{ formatDateTime(activityRecord.createdAt) }}</strong>
+          </div>
+          <div v-if="details?.confirmedAt" class="key-value-row">
+            <span>链上确认</span>
+            <strong>{{ formatDateTime(details.confirmedAt) }}</strong>
           </div>
         </div>
       </SectionCard>
 
-      <SectionCard v-if="details" title="Fees" description="实际执行费用与广播参数">
+      <!-- Technical Details Card -->
+      <SectionCard title="技术参数">
         <div class="key-value-list">
-          <div class="key-value-row">
-            <span>实际网络费</span>
-            <strong>
-              {{ details.actualNetworkFee ? `${formatTokenAmount(details.actualNetworkFee)} ${selectedNetwork.symbol}` : "Pending" }}
-            </strong>
+          <div class="key-value-row" style="flex-direction: column; align-items: flex-start; gap: 4px;">
+            <div style="display: flex; justify-content: space-between; width: 100%; align-items: center;">
+              <span>交易哈希 (TxHash)</span>
+              <button
+                class="button button--ghost button--small"
+                type="button"
+                style="padding: 1px 6px; font-size: 0.7rem;"
+                @click="copyTxHash"
+              >
+                {{ isHashCopied ? "已复制" : "复制哈希" }}
+              </button>
+            </div>
+            <p class="address-block" style="width: 100%; margin: 0; font-size: 0.72rem; word-break: break-all;">
+              {{ txHash }}
+            </p>
           </div>
           <div class="key-value-row">
-            <span>Gas Used</span>
-            <strong>{{ details.gasUsed ?? "Pending" }}</strong>
+            <span>Nonce</span>
+            <strong>{{ details?.nonce ?? "N/A" }}</strong>
           </div>
           <div class="key-value-row">
+            <span>Gas Limit / Used</span>
+            <strong>{{ details?.gasLimit ?? "N/A" }} / {{ details?.gasUsed ?? "Pending" }}</strong>
+          </div>
+          <div v-if="details?.effectiveGasPriceGwei" class="key-value-row">
             <span>Effective Gas Price</span>
-            <strong>{{ details.effectiveGasPriceGwei ? `${details.effectiveGasPriceGwei} gwei` : "Pending" }}</strong>
+            <strong>{{ details.effectiveGasPriceGwei }} gwei</strong>
           </div>
-          <div v-if="details.gasPriceGwei" class="key-value-row">
+          <div v-else-if="details?.gasPriceGwei" class="key-value-row">
             <span>Gas Price</span>
             <strong>{{ details.gasPriceGwei }} gwei</strong>
           </div>
-          <div v-if="details.maxFeePerGasGwei" class="key-value-row">
-            <span>Max Fee</span>
-            <strong>{{ details.maxFeePerGasGwei }} gwei</strong>
-          </div>
-          <div v-if="details.maxPriorityFeePerGasGwei" class="key-value-row">
-            <span>Priority Fee</span>
-            <strong>{{ details.maxPriorityFeePerGasGwei }} gwei</strong>
-          </div>
         </div>
-        <div class="form-actions">
-          <button class="button button--ghost" type="button" @click="loadTransactionDetails">
-            立即刷新
-          </button>
+
+        <div class="form-actions" style="margin-top: 14px;">
           <button
             v-if="safeExplorerUrl"
-            class="button button--secondary"
+            class="button button--primary"
             type="button"
             @click="openExternal(safeExplorerUrl)"
           >
             打开区块浏览器
+          </button>
+          <button class="button button--ghost" type="button" @click="loadTransactionDetails">
+            立即刷新
           </button>
         </div>
         <p v-if="externalLinkError" class="helper-text helper-text--error">

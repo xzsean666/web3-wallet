@@ -1,57 +1,42 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
 import { RouterLink } from "vue-router";
-import SectionCard from "../components/SectionCard.vue";
-import { getAppOverview } from "../services/system";
-import type { AppOverview } from "../types/app";
-
-const overview = ref<AppOverview | null>(null);
-const loadError = ref("");
-
-onMounted(async () => {
-  try {
-    overview.value = await getAppOverview();
-  } catch (error) {
-    loadError.value =
-      error instanceof Error
-        ? error.message
-        : "Tauri runtime info is unavailable in plain web preview.";
-  }
-});
-
-const runtimeLabel = computed(() => {
-  if (!overview.value) {
-    return "加载中...";
-  }
-
-  return overview.value.runtime.includes("Browser") ? "浏览器预览" : "Tauri 运行时";
-});
-
-const securityLabel = computed(() => {
-  if (!overview.value) {
-    return "加载中...";
-  }
-
-  return overview.value.runtime.includes("Browser") ? "真实签名仅限 Tauri" : "本地签名";
-});
-
-const storageLabel = computed(() => {
-  if (!overview.value) {
-    return "加载中...";
-  }
-
-  return overview.value.storageStrategy.includes("Stronghold") ? "Stronghold + SQLite" : "本地存储";
-});
 </script>
 
 <template>
   <main class="marketing-shell marketing-shell--landing">
     <section class="marketing-hero marketing-hero--landing">
       <div class="hero-copy hero-copy--landing">
+        <div
+          style="
+            width: 68px;
+            height: 68px;
+            border-radius: 20px;
+            background: linear-gradient(135deg, #6366f1 0%, #06b6d4 100%);
+            display: grid;
+            place-items: center;
+            box-shadow: 0 10px 28px rgba(99, 102, 241, 0.45);
+            margin-bottom: 12px;
+          "
+        >
+          <svg
+            width="36"
+            height="36"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="#ffffff"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M21 12V7H5a2 2 0 0 1 0-4h14v4" />
+            <path d="M3 5v14a2 2 0 0 0 2 2h16v-5" />
+            <path d="M18 12a2 2 0 0 0 0 4h4v-4Z" />
+          </svg>
+        </div>
         <p class="eyebrow">Web3 Wallet</p>
-        <h1>创建或导入钱包</h1>
-        <p class="subtitle">只保留常用操作。支持 Native Token 和 ERC20。</p>
-        <div class="button-row">
+        <h1>极简 Web3 钱包</h1>
+        <p class="subtitle">安全、极速、自主掌控多链资产与代币</p>
+        <div class="button-row" style="margin-top: 12px;">
           <RouterLink class="button button--primary" to="/onboarding/create">
             创建钱包
           </RouterLink>
@@ -61,25 +46,5 @@ const storageLabel = computed(() => {
         </div>
       </div>
     </section>
-
-    <SectionCard class="welcome-note" title="预览说明">
-      <div class="key-value-list">
-        <div class="key-value-row">
-          <span>模式</span>
-          <strong>{{ runtimeLabel }}</strong>
-        </div>
-        <div class="key-value-row">
-          <span>签名</span>
-          <strong>{{ securityLabel }}</strong>
-        </div>
-        <div class="key-value-row">
-          <span>存储</span>
-          <strong>{{ storageLabel }}</strong>
-        </div>
-      </div>
-      <p v-if="loadError" class="helper-text helper-text--error">
-        {{ loadError }}
-      </p>
-    </SectionCard>
   </main>
 </template>

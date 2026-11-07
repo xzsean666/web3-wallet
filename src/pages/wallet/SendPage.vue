@@ -55,10 +55,18 @@ const isBroadcasting = ref(false);
 const isRefreshingBalance = ref(false);
 const isFillingMax = ref(false);
 const paymentRequestText = ref("");
+const showManualQrInput = ref(false);
 const paymentRequestFeedback = ref<null | {
   tone: "success" | "error";
   message: string;
 }>(null);
+
+async function handleRecipientInput() {
+  const trimmed = recipientAddress.value.trim();
+  if (trimmed.startsWith("ethereum:")) {
+    await applyPaymentRequestPayload(trimmed, "收款地址");
+  }
+}
 const amountFeedback = ref<null | {
   tone: "success" | "error";
   message: string;
@@ -1443,6 +1451,7 @@ async function signAndBroadcast() {
               autocomplete="off"
               :disabled="isBroadcasting"
               placeholder="0x..."
+              @input="handleRecipientInput"
             />
           </label>
 
@@ -1462,6 +1471,14 @@ async function signAndBroadcast() {
               @click="pasteRecipientAddress"
             >
               粘贴地址/QR
+            </button>
+            <button
+              class="button button--ghost button--small"
+              type="button"
+              :disabled="isBroadcasting"
+              @click="showManualQrInput = !showManualQrInput"
+            >
+              {{ showManualQrInput ? "收起协议框" : "手动输入协议" }}
             </button>
             <span
               v-if="paymentRequestFeedback"
@@ -1489,26 +1506,42 @@ async function signAndBroadcast() {
             </div>
           </section>
 
-          <label class="field">
-            <span>扫码内容</span>
-            <textarea
-              v-model="paymentRequestText"
-              :disabled="isBroadcasting"
-              placeholder="ethereum:0x... 或 0x..."
-              rows="3"
-            ></textarea>
-          </label>
-
-          <div class="form-actions form-actions--compact">
-            <button
-              class="button button--ghost button--small"
-              type="button"
-              :disabled="isBroadcasting || !paymentRequestText.trim()"
-              @click="applyTypedPaymentRequest"
-            >
-              解析扫码内容
-            </button>
-          </div>
+          <section
+            v-if="showManualQrInput || (paymentRequestText && !isScannerOpen)"
+            class="card-stack"
+            style="padding: 12px; background: rgba(255, 255, 255, 0.03); border-radius: var(--radius-sm); border: 1px dashed rgba(255, 255, 255, 0.12); margin: 6px 0;"
+          >
+            <label class="field" style="margin: 0;">
+              <span style="font-size: 0.76rem;">EIP-681 协议内容</span>
+              <textarea
+                v-model="paymentRequestText"
+                :disabled="isBroadcasting"
+                placeholder="ethereum:0x... 或 0x..."
+                rows="2"
+                style="font-family: var(--font-mono); font-size: 0.82rem;"
+              ></textarea>
+            </label>
+            <div class="form-actions form-actions--compact" style="margin-top: 6px;">
+              <button
+                class="button button--secondary button--small"
+                type="button"
+                :disabled="isBroadcasting || !paymentRequestText.trim()"
+                @click="applyTypedPaymentRequest"
+              >
+                解析协议
+              </button>
+              <button
+                class="button button--ghost button--small"
+                type="button"
+                @click="
+                  showManualQrInput = false;
+                  paymentRequestText = '';
+                "
+              >
+                收起
+              </button>
+            </div>
+          </section>
 
           <section v-if="pendingTokenImport" class="card-stack qr-token-confirm">
             <p class="helper-text">

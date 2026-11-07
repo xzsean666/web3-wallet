@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { RouterLink, useRouter } from "vue-router";
 import { isAddress } from "viem";
@@ -36,13 +36,33 @@ const canReadMetadata = computed(() => isAddress(contractAddress.value.trim()));
 const currentMetadataKey = computed(() =>
   canReadMetadata.value ? `${activeNetwork.value.id}:${contractAddress.value.trim().toLowerCase()}` : "",
 );
+let autoLookupTimer: number | null = null;
 
-watch([contractAddress, activeNetwork], () => {
+watch([contractAddress, activeNetwork], ([newAddress]) => {
   metadataLookupRequestId += 1;
   validatedMetadataKey.value = "";
   verifiedMetadata.value = null;
   metadataLookupError.value = "";
   metadataLookupMessage.value = "";
+
+  if (autoLookupTimer) {
+    window.clearTimeout(autoLookupTimer);
+    autoLookupTimer = null;
+  }
+
+  const trimmed = typeof newAddress === "string" ? newAddress.trim() : "";
+  if (isAddress(trimmed)) {
+    autoLookupTimer = window.setTimeout(() => {
+      void readMetadataFromContract();
+    }, 450);
+  }
+});
+
+onBeforeUnmount(() => {
+  if (autoLookupTimer) {
+    window.clearTimeout(autoLookupTimer);
+    autoLookupTimer = null;
+  }
 });
 
 async function readMetadataFromContract() {
@@ -145,12 +165,14 @@ async function addToken() {
 
 <template>
   <WalletChrome
-    eyebrow="Add Token"
-    title="手动添加 ERC20。"
-    subtitle="当前支持按合约读取 ERC20 基础元数据，再手动确认后添加到当前激活网络。"
+    eyebrow="自定义代币"
+    title="添加代币"
+    subtitle="输入 ERC20 合约地址，自动读取链上代币元数据并添加至当前网络。"
+    :show-hero="true"
+    :show-nav="false"
   >
-    <section class="page-grid page-grid--2">
-      <SectionCard title="Add ERC20" description="当前网络下新增 Token">
+    <section class="page-grid page-grid--1">
+      <SectionCard title="代币信息">
         <form class="form-grid" @submit.prevent="addToken">
           <label class="field">
             <span>当前网络</span>
@@ -164,28 +186,27 @@ async function addToken() {
 
           <div class="form-actions">
             <button
-              class="button button--secondary"
+              class="button button--secondary button--small"
               type="button"
               :disabled="isReadingMetadata || !canReadMetadata"
               @click="readMetadataFromContract"
             >
               {{ isReadingMetadata ? "读取中..." : "读取合约元数据" }}
             </button>
-            <span class="helper-text">会基于当前网络 RPC 调用 `name / symbol / decimals`</span>
           </div>
 
           <label class="field">
-            <span>Token 名称</span>
+            <span>代币名称</span>
             <input v-model="name" placeholder="USD Coin" readonly />
           </label>
 
           <label class="field">
-            <span>Token Symbol</span>
+            <span>代币符号 (Symbol)</span>
             <input v-model="symbol" maxlength="10" placeholder="USDC" readonly />
           </label>
 
           <label class="field">
-            <span>Decimals</span>
+            <span>精度 (Decimals)</span>
             <input
               v-model="decimals"
               inputmode="numeric"
@@ -194,7 +215,7 @@ async function addToken() {
             />
           </label>
 
-          <p v-if="metadataLookupMessage" class="helper-text">{{ metadataLookupMessage }}</p>
+          <p v-if="metadataLookupMessage" class="helper-text helper-text--success">{{ metadataLookupMessage }}</p>
           <p v-if="metadataLookupError" class="helper-text helper-text--error">
             {{ metadataLookupError }}
           </p>
@@ -203,22 +224,11 @@ async function addToken() {
             <li v-for="error in formErrors" :key="error">{{ error }}</li>
           </ul>
 
-          <div class="form-actions">
-            <button class="button button--primary" type="submit">添加 Token</button>
+          <div class="form-actions" style="margin-top: 8px;">
+            <button class="button button--primary" type="submit" :disabled="!name || !symbol">添加代币</button>
             <RouterLink class="button button--ghost" to="/wallet">取消</RouterLink>
           </div>
         </form>
-      </SectionCard>
-
-      <SectionCard title="Rules" description="当前添加规则">
-        <ul class="bullet-list">
-          <li>只允许当前激活网络下的 ERC20 Token</li>
-          <li>必须输入合法 EVM 合约地址</li>
-          <li>保存前必须成功读取 `name / symbol / decimals`</li>
-          <li>Token 名称、Symbol 和 Decimals 以链上返回值为准</li>
-          <li>Symbol 长度不超过 10</li>
-          <li>Decimals 只接受 0 到 36 的整数</li>
-        </ul>
       </SectionCard>
     </section>
   </WalletChrome>

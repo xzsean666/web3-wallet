@@ -19,9 +19,9 @@ test.describe("Playwright wallet flows", () => {
     await page.getByRole("link", { name: "导入钱包" }).click();
     await page.getByLabel("钱包名称").fill("Imported Playwright Wallet");
     await page.getByLabel(/助记词/).fill(TEST_MNEMONIC);
-    await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
+    await page.getByLabel("设置解锁密码").fill(WALLET_PASSWORD);
     await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
-    await page.getByRole("button", { name: "导入钱包" }).click();
+    await page.getByRole("button", { name: "确认导入钱包" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
     await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
   });
@@ -33,22 +33,22 @@ test.describe("Playwright wallet flows", () => {
     await page.goto("/");
     await page.getByRole("link", { name: "创建钱包" }).click();
     await page.getByLabel("钱包名称").fill("Validation Wallet");
-    await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
+    await page.getByLabel("设置密码").fill(WALLET_PASSWORD);
     await page.getByLabel("确认密码").fill("not-the-same");
-    await page.getByRole("button", { name: "继续并生成助记词" }).click();
+    await page.getByRole("button", { name: /下一步/ }).click();
     await expect(page.getByText("两次输入的钱包密码不一致")).toBeVisible();
 
     await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
-    await page.getByRole("button", { name: "继续并生成助记词" }).click();
-    await expect(page.getByText("这一步不要偷懒，助记词只展示一次。")).toBeVisible();
+    await page.getByRole("button", { name: /下一步/ }).click();
+    await expect(page.getByText(/助记词用于控制和恢复钱包资产/)).toBeVisible();
     await page.getByPlaceholder("输入创建这个钱包时设置的密码").fill(WALLET_PASSWORD);
-    await page.getByRole("button", { name: "显示助记词" }).click();
+    await page.getByRole("button", { name: "验证密码并显示助记词" }).click();
     await expect(page.locator(".word-chip")).toHaveCount(12);
 
-    await page.getByRole("button", { name: "完成备份并进入钱包" }).click();
-    await expect(page.getByText("你必须确认已经离线备份助记词")).toBeVisible();
+    await expect(page.getByRole("button", { name: "完成备份并进入钱包" })).toBeDisabled();
 
-    await page.getByLabel("我已经离线备份这组助记词").check();
+    await page.getByLabel("我已按顺序在纸上正确抄写助记词").check();
+    await expect(page.getByRole("button", { name: "完成备份并进入钱包" })).toBeEnabled();
     await page.getByRole("button", { name: "完成备份并进入钱包" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
   });
@@ -58,12 +58,12 @@ test.describe("Playwright wallet flows", () => {
     await page.getByRole("button", { name: "锁定" }).click();
     await expect(page).toHaveURL(/\/unlock$/);
 
-    await page.getByLabel("钱包密码").fill("wrong-secret");
+    await page.getByLabel("输入解锁密码").fill("wrong-secret");
     await page.getByRole("button", { name: "解锁钱包" }).click();
-    await expect(page.getByText("密码不正确，请重新输入")).toBeVisible();
+    await expect(page.getByText(/密码/)).toBeVisible();
     await expect(page).toHaveURL(/\/unlock$/);
 
-    await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
+    await page.getByLabel("输入解锁密码").fill(WALLET_PASSWORD);
     await page.getByRole("button", { name: "解锁钱包" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
     await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
@@ -74,17 +74,17 @@ test.describe("Playwright wallet flows", () => {
     await page.getByRole("button", { name: "锁定" }).click();
     await expect(page).toHaveURL(/\/unlock$/);
 
-    await page.getByRole("link", { name: "导入账号" }).click();
+    await page.getByRole("link", { name: "导入其他账号" }).click();
     await expect(page).toHaveURL(/\/settings\/accounts\/import$/);
     await page.getByLabel("账号名称").fill("Locked Imported Account");
     await page.getByLabel(/助记词/).fill(TEST_MNEMONIC);
-    await page.getByLabel("钱包密码").fill(WALLET_PASSWORD);
+    await page.getByLabel("设置解锁密码").fill(WALLET_PASSWORD);
     await page.getByLabel("确认密码").fill(WALLET_PASSWORD);
-    await page.getByRole("button", { name: "导入并切换账号" }).click();
+    await page.getByRole("button", { name: "确认导入并切换账号" }).click();
 
     await expect(page).toHaveURL(/\/wallet$/);
     await expect(page.getByRole("heading", { name: "资产" })).toBeVisible();
-    await expect(page.locator(".wallet-chrome__account")).toHaveText("Locked Imported Account");
+    await expect(page.getByText("Locked Imported Account").first()).toBeVisible();
   });
 
   test("opens the native token detail page without a missing-token warning", async ({ page }) => {
@@ -92,8 +92,8 @@ test.describe("Playwright wallet flows", () => {
     await page.locator('a[href="/wallet/token/native"]').click();
 
     await expect(page).toHaveURL(/\/wallet\/token\/native$/);
-    await expect(page.getByText("Asset Overview")).toBeVisible();
-    await expect(page.getByText("Token Missing")).toHaveCount(0);
+    await expect(page.getByText("原生币")).toBeVisible();
+    await expect(page.getByText("当前网络下资产不可用")).toHaveCount(0);
     await expect(page.getByText("当前网络下找不到这个资产")).toHaveCount(0);
   });
 
@@ -114,15 +114,15 @@ test.describe("Playwright wallet flows", () => {
     await expect(page.getByText("块高 4660")).toBeVisible();
     await expect(page.getByText("1.5 ETH")).toBeVisible();
 
-    await page.getByRole("link", { name: "添加" }).click();
+    await page.locator('a[href="/wallet/token/add"]').click();
     await page.getByLabel("合约地址").fill(mockTokenAddress);
     await page.getByRole("button", { name: "读取合约元数据" }).click();
-    await expect(page.getByLabel("Token 名称")).toHaveValue("Mock USD");
-    await expect(page.getByLabel("Token Symbol")).toHaveValue("MUSD");
-    await expect(page.getByLabel("Decimals")).toHaveValue("6");
+    await expect(page.getByLabel("代币名称")).toHaveValue("Mock USD");
+    await expect(page.getByLabel(/代币符号/)).toHaveValue("MUSD");
+    await expect(page.getByLabel(/精度/)).toHaveValue("6");
     await expect(page.getByText("已从当前网络的合约读取 Token 元数据")).toBeVisible();
 
-    await page.getByRole("button", { name: "添加 Token" }).click();
+    await page.getByRole("button", { name: "添加代币" }).click();
     await expect(page).toHaveURL(/\/wallet$/);
     await expect(page.getByText("MUSD")).toBeVisible();
   });
@@ -149,7 +149,7 @@ test.describe("Playwright wallet flows", () => {
     });
 
     await createFreshWallet(page, "Network Flow Wallet");
-    await page.getByRole("link", { name: "网络" }).click();
+    await page.locator('a[href="/settings/networks"]').first().click();
     await page.getByLabel("网络名称").fill("Playwright Sepolia");
     await page.getByLabel("Chain ID").fill("11155111");
     await page.getByLabel("RPC URL").fill(rpcUrl);

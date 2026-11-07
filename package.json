@@ -24,7 +24,7 @@
     "test": "pnpm test:rust && pnpm test:unit",
     "test:rust": "cargo test -q --manifest-path src-tauri/Cargo.toml",
     "test:security": "pnpm test:rust && pnpm test:unit",
-    "test:unit": "vitest run",
+    "test:unit": "NODE_OPTIONS='--no-experimental-webstorage' vitest run",
     "test:unit:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test"

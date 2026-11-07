@@ -268,157 +268,108 @@ async function openExternal(url: string | null) {
 
 <template>
   <WalletChrome
-    eyebrow="Token Detail"
-    :title="asset ? `${asset.symbol} 资产详情` : '资产详情'"
-    :subtitle="
-      asset
-        ? `当前展示 ${activeNetwork.name} 网络下的余额、资产元数据和最近提交记录。`
-        : '当前路由对应的 Token 在这个网络下不可用。'
-    "
+    eyebrow="资产详情"
+    :title="asset ? `${asset.symbol}` : '资产详情'"
+    :subtitle="asset ? `${activeNetwork.name} · ${asset.name}` : '当前网络下资产不可用'"
+    :show-nav="false"
   >
-    <template #actions>
-      <RouterLink
-        v-if="asset"
-        class="button button--primary"
-        :to="{ name: 'wallet-send', query: { asset: asset.id } }"
-      >
-        发送 {{ asset.symbol }}
-      </RouterLink>
-      <RouterLink
-        v-if="asset"
-        class="button button--secondary"
-        :to="{ name: 'wallet-send', query: { asset: asset.id, scan: '1' } }"
-      >
-        扫码付款
-      </RouterLink>
-      <RouterLink class="button button--secondary" to="/wallet/receive">收款</RouterLink>
-      <button class="button button--ghost" type="button" @click="refreshTokenContext">刷新</button>
-    </template>
+    <!-- Asset Balance & Actions Hero -->
+    <section v-if="asset" class="section-card home-balance-card" style="padding: 22px 20px;">
+      <div style="display: flex; align-items: center; justify-content: space-between;">
+        <span class="status-chip status-chip--accent">{{ asset.type === 'native' ? '原生币' : 'ERC20 代币' }}</span>
+        <button class="button button--ghost button--small" type="button" @click="refreshTokenContext">
+          刷新
+        </button>
+      </div>
 
-    <section v-if="asset" class="status-grid">
-      <SectionCard title="Balance" description="当前链上余额" tone="accent">
-        <p class="metric-value">{{ assetBalance }} {{ asset.symbol }}</p>
-        <p>同步时间：{{ syncTimestamp }}</p>
-      </SectionCard>
+      <p class="home-balance-card__amount" style="margin: 4px 0 0;">
+        {{ assetBalance }} {{ asset.symbol }}
+      </p>
 
-      <SectionCard title="Network" description="当前资产所在网络">
-        <p class="metric-value">{{ activeNetwork.name }}</p>
-        <p>Chain ID {{ activeNetwork.chainId }}</p>
-      </SectionCard>
+      <div class="home-quick-actions" style="margin-top: 6px;">
+        <RouterLink
+          class="button button--secondary"
+          :to="{ name: 'wallet-send', query: { asset: asset.id } }"
+        >
+          发送
+        </RouterLink>
+        <RouterLink
+          class="button button--secondary"
+          :to="{ name: 'wallet-send', query: { asset: asset.id, scan: '1' } }"
+        >
+          扫码
+        </RouterLink>
+        <RouterLink class="button button--secondary" to="/wallet/receive">
+          收款
+        </RouterLink>
+        <RouterLink class="button button--ghost" to="/wallet">
+          返回
+        </RouterLink>
+      </div>
 
-      <SectionCard title="Asset Type" description="当前支持范围">
-        <p class="metric-value">{{ asset.type === "native" ? "Native" : "ERC20" }}</p>
-        <p>{{ asset.source === "custom" ? "Custom tracked token" : "Preset asset" }}</p>
-      </SectionCard>
-
-      <SectionCard title="Precision" description="资产精度">
-        <p class="metric-value">{{ asset.decimals }}</p>
-        <p>Decimals</p>
-      </SectionCard>
+      <p v-if="pageError" class="helper-text helper-text--error">{{ pageError }}</p>
     </section>
 
-    <section v-if="asset" class="page-grid page-grid--2">
-      <SectionCard title="Asset Overview" description="核心资产信息">
-        <div class="chip-row">
-          <span class="status-chip status-chip--accent">{{ asset.symbol }}</span>
-          <span class="status-chip">{{ asset.type === "native" ? "Native Token" : "ERC20 Token" }}</span>
-          <span class="status-chip">{{ activeNetwork.name }}</span>
-        </div>
-
+    <!-- Token Information Card -->
+    <section v-if="asset" class="page-grid page-grid--1">
+      <SectionCard title="代币详情">
         <div class="key-value-list">
           <div class="key-value-row">
-            <span>资产名称</span>
+            <span>代币全称</span>
             <strong>{{ asset.name }}</strong>
           </div>
           <div class="key-value-row">
-            <span>我的地址</span>
+            <span>所在网络</span>
+            <strong>{{ activeNetwork.name }} (Chain ID: {{ activeNetwork.chainId }})</strong>
+          </div>
+          <div class="key-value-row">
+            <span>代币精度</span>
+            <strong>{{ asset.decimals }} Decimals</strong>
+          </div>
+          <div v-if="snapshot.lastSyncedAt" class="key-value-row">
+            <span>数据同步</span>
+            <strong>{{ syncTimestamp }}</strong>
+          </div>
+          <div v-if="asset.contractAddress" class="key-value-row">
+            <span>合约地址</span>
+            <strong>{{ asset.contractAddress }}</strong>
+          </div>
+          <div class="key-value-row">
+            <span>钱包地址</span>
             <strong>{{ shortenAddress(primaryAddress) }}</strong>
           </div>
-          <div class="key-value-row">
-            <span>最新区块</span>
-            <strong>{{ snapshot.latestBlock ?? "Pending" }}</strong>
-          </div>
-          <div class="key-value-row">
-            <span>数据状态</span>
-            <strong>{{ snapshot.status }}</strong>
+          <div v-if="snapshot.latestBlock" class="key-value-row">
+            <span>链上最新块高</span>
+            <strong>{{ snapshot.latestBlock }}</strong>
           </div>
         </div>
 
-        <p v-if="pageError" class="helper-text helper-text--error">{{ pageError }}</p>
-        <p v-else class="helper-text">
-          {{ asset.type === "native" ? "发送和 Gas 都以当前网络原生币结算。" : "该 Token 仅在当前网络下被本地跟踪。" }}
+        <div v-if="asset.contractAddress && tokenExplorerUrl" class="form-actions" style="margin-top: 4px;">
+          <button
+            class="button button--secondary button--small"
+            type="button"
+            @click="openExternal(tokenExplorerUrl)"
+          >
+            在区块浏览器中查看合约
+          </button>
+        </div>
+        <div v-else-if="addressExplorerUrl" class="form-actions" style="margin-top: 4px;">
+          <button
+            class="button button--secondary button--small"
+            type="button"
+            @click="openExternal(addressExplorerUrl)"
+          >
+            在区块浏览器中查看地址
+          </button>
+        </div>
+        <p v-if="externalLinkError" class="helper-text helper-text--error">
+          {{ externalLinkError }}
         </p>
       </SectionCard>
 
-      <SectionCard
-        :title="asset.type === 'native' ? 'Receive Context' : 'Contract Detail'"
-        :description="
-          asset.type === 'native'
-            ? '收款前请确认对方转入网络一致'
-            : '当前 ERC20 合约与跟踪来源'
-        "
-      >
-        <template v-if="asset.contractAddress">
-          <p class="address-block">{{ asset.contractAddress }}</p>
-          <div class="key-value-list">
-            <div class="key-value-row">
-              <span>跟踪来源</span>
-              <strong>{{ asset.source === "custom" ? "Custom" : "Preset" }}</strong>
-            </div>
-            <div class="key-value-row">
-              <span>浏览器支持</span>
-              <strong>{{ tokenExplorerUrl ? "Available" : "Unavailable" }}</strong>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button
-              v-if="tokenExplorerUrl"
-              class="button button--secondary"
-              type="button"
-              @click="openExternal(tokenExplorerUrl)"
-            >
-              查看合约
-            </button>
-          </div>
-          <p v-if="externalLinkError" class="helper-text helper-text--error">
-            {{ externalLinkError }}
-          </p>
-        </template>
-        <template v-else>
-          <div class="key-value-list">
-            <div class="key-value-row">
-              <span>收款地址</span>
-              <strong>{{ shortenAddress(primaryAddress) }}</strong>
-            </div>
-            <div class="key-value-row">
-              <span>原生币符号</span>
-              <strong>{{ activeNetwork.symbol }}</strong>
-            </div>
-            <div class="key-value-row">
-              <span>地址浏览器</span>
-              <strong>{{ addressExplorerUrl ? "Available" : "Unavailable" }}</strong>
-            </div>
-          </div>
-          <div class="form-actions">
-            <button
-              v-if="addressExplorerUrl"
-              class="button button--secondary"
-              type="button"
-              @click="openExternal(addressExplorerUrl)"
-            >
-              查看地址
-            </button>
-          </div>
-          <p v-if="externalLinkError" class="helper-text helper-text--error">
-            {{ externalLinkError }}
-          </p>
-        </template>
-      </SectionCard>
-    </section>
-
-    <section v-if="asset" class="page-grid page-grid--2">
-      <SectionCard title="Recent Submitted Activity" description="当前网络下最近提交的相关转账">
-        <div v-if="relatedActivity.length" class="token-list">
+      <!-- Recent Submitted Activity -->
+      <SectionCard v-if="relatedActivity.length" title="相关记录">
+        <div class="token-list">
           <RouterLink
             v-for="item in relatedActivity"
             :key="item.id"
@@ -436,12 +387,9 @@ async function openExternal(url: string | null) {
             <div class="token-row__content">
               <strong>{{ activityTitle(item) }}</strong>
               <p>{{ activitySubtitle(item) }}</p>
-              <div class="chip-row token-row__chips">
-                <span class="status-chip">{{ activeNetwork.name }}</span>
+              <div class="chip-row token-row__chips" style="margin-top: 4px;">
                 <span v-if="item.assetSymbol" class="status-chip">{{ activityAmountLabel(item) }}</span>
-                <span v-if="item.recipientAddress" class="status-chip">
-                  {{ activityRecipientLabel(item) }}
-                </span>
+                <span v-if="item.recipientAddress" class="status-chip">{{ activityRecipientLabel(item) }}</span>
               </div>
             </div>
             <div class="token-row__meta">
@@ -460,42 +408,22 @@ async function openExternal(url: string | null) {
                 {{ formatActivityStatus(item.status) }}
               </span>
               <strong class="token-row__timestamp">{{ formatRelativeTime(item.createdAt) }}</strong>
-              <span class="helper-text">{{ formatDateTime(item.createdAt) }}</span>
             </div>
           </RouterLink>
         </div>
-        <p v-else class="empty-state">
-          当前还没有和这个资产相关的最近活动。发起一笔转账后，这里会显示当前账户的相关活动记录。
+      </SectionCard>
+
+      <!-- Manage Custom Token -->
+      <SectionCard v-if="canRemoveCustomToken" title="管理自选代币" tone="warning">
+        <p class="helper-text">
+          此代币为自选添加的 ERC20 代币。移除后仅从本地资产列表取消跟踪，不会影响链上资产。
         </p>
-      </SectionCard>
-
-      <SectionCard title="Next Action" description="当前资产相关的直接入口">
-        <div class="card-stack">
-          <RouterLink class="button button--primary" :to="{ name: 'wallet-send', query: { asset: asset.id } }">
-            继续发送 {{ asset.symbol }}
-          </RouterLink>
-          <RouterLink class="button button--secondary" :to="{ name: 'wallet-send', query: { asset: asset.id, scan: '1' } }">
-            扫码付款
-          </RouterLink>
-          <RouterLink class="button button--secondary" to="/wallet/receive">打开收款页</RouterLink>
-          <RouterLink class="button button--ghost" to="/wallet">返回资产首页</RouterLink>
-        </div>
-      </SectionCard>
-    </section>
-
-    <section v-if="canRemoveCustomToken" class="page-grid page-grid--1">
-      <SectionCard title="Tracked Token Management" description="只影响当前设备上的本地跟踪状态" tone="warning">
-        <div class="card-stack">
-          <p class="helper-text">
-            这个 Token 是你手动添加的自定义 ERC20。移除后会从当前网络的资产列表中消失，但不会影响链上资产本身。
-          </p>
-          <p v-if="removeTokenFeedback" class="helper-text helper-text--error">
-            {{ removeTokenFeedback }}
-          </p>
-        </div>
-        <div class="form-actions">
+        <p v-if="removeTokenFeedback" class="helper-text helper-text--error">
+          {{ removeTokenFeedback }}
+        </p>
+        <div class="form-actions" style="margin-top: 4px;">
           <button
-            class="button button--danger"
+            class="button button--danger button--small"
             type="button"
             :disabled="isRemovingCustomToken"
             @click="removeTrackedToken"
@@ -510,7 +438,7 @@ async function openExternal(url: string | null) {
           </button>
           <button
             v-if="isRemoveConfirming && !isRemovingCustomToken"
-            class="button button--ghost"
+            class="button button--ghost button--small"
             type="button"
             @click="
               isRemoveConfirming = false;
@@ -523,12 +451,13 @@ async function openExternal(url: string | null) {
       </SectionCard>
     </section>
 
+    <!-- Missing Asset State -->
     <section v-if="!asset" class="page-grid page-grid--1">
-      <SectionCard title="Token Missing" description="当前网络下找不到这个资产" tone="warning">
+      <SectionCard title="未找到资产" tone="warning">
         <p class="helper-text helper-text--error">{{ pageError }}</p>
         <div class="form-actions">
           <RouterLink class="button button--primary" to="/wallet">返回资产首页</RouterLink>
-          <RouterLink class="button button--ghost" to="/wallet/token/add">手动添加 Token</RouterLink>
+          <RouterLink class="button button--ghost" to="/wallet/token/add">手动添加代币</RouterLink>
         </div>
       </SectionCard>
     </section>

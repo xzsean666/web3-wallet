@@ -11,12 +11,18 @@ export default defineConfig({
   webServer: {
     command: "pnpm dev --host 127.0.0.1 --port 1420",
     port: 1420,
-    reuseExistingServer: false,
+    reuseExistingServer: true,
   },
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        channel: "chrome",
+        launchOptions: {
+          args: ["--no-sandbox", "--disable-setuid-sandbox"],
+        },
+      },
     },
   ],
 });
