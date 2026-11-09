@@ -6971,7 +6971,7 @@ dependencies = [
 
 [[package]]
 name = "web3-wallet"
-version = "0.1.8"
+version = "0.1.9"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
