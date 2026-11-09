@@ -1,0 +1,119 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <radialGradient id="bgGlow" cx="50%" cy="50%" r="65%">
+      <stop offset="0%" stop-color="#14172b" />
+      <stop offset="70%" stop-color="#090a10" />
+      <stop offset="100%" stop-color="#050608" />
+    </radialGradient>
+
+    <!-- Border Glow Gradient -->
+    <linearGradient id="borderGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#818cf8" stop-opacity="0.8" />
+      <stop offset="40%" stop-color="#6366f1" stop-opacity="0.3" />
+      <stop offset="70%" stop-color="#06b6d4" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0.9" />
+    </linearGradient>
+
+    <!-- Crystal Gradients -->
+    <!-- Left outer facet -->
+    <linearGradient id="leftOuter" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc" />
+      <stop offset="50%" stop-color="#818cf8" />
+      <stop offset="100%" stop-color="#4f46e5" />
+    </linearGradient>
+
+    <!-- Left inner facet -->
+    <linearGradient id="leftInner" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e0e7ff" />
+      <stop offset="40%" stop-color="#a5b4fc" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+
+    <!-- Center apex facet (Left) -->
+    <linearGradient id="centerLeft" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="50%" stop-color="#c7d2fe" />
+      <stop offset="100%" stop-color="#6366f1" />
+    </linearGradient>
+
+    <!-- Center apex facet (Right) -->
+    <linearGradient id="centerRight" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffffff" />
+      <stop offset="50%" stop-color="#a5f3fc" />
+      <stop offset="100%" stop-color="#06b6d4" />
+    </linearGradient>
+
+    <!-- Right inner facet -->
+    <linearGradient id="rightInner" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#cffafe" />
+      <stop offset="50%" stop-color="#67e8f9" />
+      <stop offset="100%" stop-color="#0891b2" />
+    </linearGradient>
+
+    <!-- Right outer facet -->
+    <linearGradient id="rightOuter" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#38bdf8" />
+      <stop offset="50%" stop-color="#06b6d4" />
+      <stop offset="100%" stop-color="#0e7490" />
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="neonGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="12" result="blur1" />
+      <feGaussianBlur stdDeviation="24" result="blur2" />
+      <feMerge>
+        <feMergeNode in="blur2" />
+        <feMergeNode in="blur1" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Squircle Base with Precision Bevel -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGlow)" stroke="url(#borderGradient)" stroke-width="3.5" />
+
+  <!-- Inner Ambient Neon Glows -->
+  <circle cx="180" cy="300" r="140" fill="#6366f1" opacity="0.22" filter="url(#neonGlow)" />
+  <circle cx="332" cy="300" r="140" fill="#06b6d4" opacity="0.22" filter="url(#neonGlow)" />
+  <circle cx="256" cy="180" r="100" fill="#818cf8" opacity="0.28" filter="url(#neonGlow)" />
+
+  <!-- Crystal Faceted W -->
+  <g filter="url(#neonGlow)">
+    <!-- Central Prism Spine & Apex (256, 110) -->
+    <!-- Center Left Facet -->
+    <polygon points="256,110 256,290 200,200" fill="url(#centerLeft)" opacity="0.95" />
+    <!-- Center Right Facet -->
+    <polygon points="256,110 312,200 256,290" fill="url(#centerRight)" opacity="0.95" />
+
+    <!-- Left Wing -->
+    <!-- Left Top Ridge to Bottom Tip (200, 395) -->
+    <polygon points="105,170 185,170 200,395" fill="url(#leftOuter)" opacity="0.9" />
+    <polygon points="185,170 200,200 256,290 200,395" fill="url(#leftInner)" opacity="0.95" />
+    <!-- Left Facet Highlight Slice -->
+    <polygon points="105,170 145,210 200,395" fill="#f5d0fe" opacity="0.35" />
+
+    <!-- Right Wing -->
+    <!-- Right Top Ridge to Bottom Tip (312, 395) -->
+    <polygon points="327,170 407,170 312,395" fill="url(#rightOuter)" opacity="0.9" />
+    <polygon points="327,170 312,200 256,290 312,395" fill="url(#rightInner)" opacity="0.95" />
+    <!-- Right Facet Highlight Slice -->
+    <polygon points="407,170 367,210 312,395" fill="#e0f2fe" opacity="0.35" />
+
+    <!-- Wireframe Crystal Facet Lines -->
+    <polyline points="105,170 200,395 256,290 312,395 407,170" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
+    <polyline points="185,170 200,200 256,110 312,200 327,170" fill="none" stroke="#ffffff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9" />
+    <line x1="256" y1="110" x2="256" y2="290" stroke="#ffffff" stroke-width="3" stroke-linecap="round" opacity="0.95" />
+    <line x1="200" y1="200" x2="200" y2="395" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.75" />
+    <line x1="312" y1="200" x2="312" y2="395" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.75" />
+    <line x1="105" y1="170" x2="185" y2="170" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+    <line x1="327" y1="170" x2="407" y2="170" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.8" />
+  </g>
+
+  <!-- Specular Shimmer Dots on Apexes -->
+  <circle cx="256" cy="110" r="4" fill="#ffffff" filter="url(#neonGlow)" />
+  <circle cx="200" cy="395" r="3.5" fill="#e0e7ff" filter="url(#neonGlow)" />
+  <circle cx="312" cy="395" r="3.5" fill="#cffafe" filter="url(#neonGlow)" />
+  <circle cx="105" cy="170" r="3" fill="#f5d0fe" filter="url(#neonGlow)" />
+  <circle cx="407" cy="170" r="3" fill="#a5f3fc" filter="url(#neonGlow)" />
+</svg>
