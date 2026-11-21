@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
 import { RouterLink, useRoute, useRouter } from "vue-router";
-import { saveBiometricUnlockCredential } from "../../services/biometrics";
 import { importWallet, isTauriWalletRuntime } from "../../services/walletBridge";
 import { useOnboardingStore } from "../../stores/onboarding";
 import { useSessionStore } from "../../stores/session";
@@ -24,7 +23,6 @@ const walletLabel = ref(
 const secretValue = ref("");
 const password = ref("");
 const confirmPassword = ref("");
-const enableBiometric = ref(true);
 const formError = ref("");
 const isSubmitting = ref(false);
 const backTarget = computed(() => {
@@ -78,14 +76,11 @@ async function submitImport() {
     const profile = await importWallet({
       walletLabel: walletLabel.value.trim(),
       password: password.value,
-      isBiometricEnabled: enableBiometric.value,
+      isBiometricEnabled: false,
       secretKind: importMode.value,
       secretValue: secretValue.value,
     });
 
-    if (profile.isBiometricEnabled && password.value) {
-      saveBiometricUnlockCredential(profile.accountId, password.value);
-    }
     onboardingStore.clearDraft();
     sessionStore.applyWalletProfile(profile, { unlocked: true });
     secretValue.value = "";
@@ -175,11 +170,6 @@ async function submitImport() {
             type="password"
             placeholder="再次输入解锁密码"
           />
-        </label>
-
-        <label class="toggle-row">
-          <input v-model="enableBiometric" :disabled="previewSecretFlowBlocked" type="checkbox" />
-          <span>启用生物识别快捷解锁</span>
         </label>
 
         <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>

@@ -20,7 +20,6 @@ const walletLabel = ref(
 );
 const password = ref("");
 const confirmPassword = ref("");
-const enableBiometric = ref(true);
 const formError = ref("");
 const isSubmitting = ref(false);
 const backTarget = computed(() => {
@@ -69,7 +68,7 @@ async function submitCreateWallet() {
     const pendingSession = await createWallet({
       walletLabel: walletLabel.value.trim(),
       password: password.value,
-      isBiometricEnabled: enableBiometric.value,
+      isBiometricEnabled: false,
     });
 
     onboardingStore.stageDraft(pendingSession);
@@ -126,11 +125,6 @@ async function submitCreateWallet() {
             type="password"
             placeholder="再次输入解锁密码"
           />
-        </label>
-
-        <label class="toggle-row">
-          <input v-model="enableBiometric" :disabled="previewSecretFlowBlocked" type="checkbox" />
-          <span>启用生物识别快捷解锁</span>
         </label>
 
         <p v-if="formError" class="helper-text helper-text--error">{{ formError }}</p>

@@ -4,6 +4,7 @@ import { formatEther, formatUnits, isAddress, parseUnits } from "viem";
 import { storeToRefs } from "pinia";
 import { RouterLink, useRoute, useRouter } from "vue-router";
 import type { IScannerControls } from "@zxing/browser";
+import PatternLock from "../../components/PatternLock.vue";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import {
@@ -13,6 +14,7 @@ import {
   fetchPortfolioSnapshot,
   readErc20TokenMetadata,
 } from "../../services/evm";
+import { getPatternUnlockPassword, hasPatternLock } from "../../services/patternLock";
 import { loadWalletScopedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import {
   prepareTransferConfirmation,
@@ -47,6 +49,25 @@ const selectedAssetId = ref("native");
 const recipientAddress = ref("");
 const amount = ref("");
 const walletPassword = ref("");
+const signAuthMode = ref<"pattern" | "password">("password");
+const hasPattern = ref(false);
+const patternStatus = ref<"normal" | "success" | "error">("normal");
+const patternLockRef = ref<InstanceType<typeof PatternLock> | null>(null);
+const patternError = ref("");
+
+function syncPatternState() {
+  if (activeAccountId.value) {
+    hasPattern.value = hasPatternLock(activeAccountId.value);
+    if (hasPattern.value) {
+      signAuthMode.value = "pattern";
+    } else {
+      signAuthMode.value = "password";
+    }
+  } else {
+    hasPattern.value = false;
+    signAuthMode.value = "password";
+  }
+}
 const formErrors = ref<string[]>([]);
 const estimateFeedback = ref<TransferErrorFeedback | null>(null);
 const transferFeedback = ref<TransferErrorFeedback | null>(null);
@@ -379,7 +400,10 @@ onBeforeUnmount(() => {
   }
 });
 
+watch(activeAccountId, syncPatternState);
+
 onMounted(() => {
+  syncPatternState();
   void refreshBalanceContext();
 
   if (route.query.scan === "1") {
@@ -1058,6 +1082,11 @@ async function buildConfirmation() {
   estimateFeedback.value = null;
   transferFeedback.value = null;
   confirmation.value = null;
+  syncPatternState();
+  walletPassword.value = "";
+  patternStatus.value = "normal";
+  patternError.value = "";
+  patternLockRef.value?.reset();
 
   if (!selectedAsset.value) {
     formErrors.value.push("请选择一个可发送的资产");
@@ -1216,6 +1245,40 @@ async function buildConfirmation() {
   }
 }
 
+async function onSignPatternCompleted(pattern: number[]) {
+  if (pattern.length < 4) {
+    patternStatus.value = "error";
+    patternError.value = "手势连线至少需要连接 4 个点";
+    setTimeout(() => {
+      patternStatus.value = "normal";
+      patternLockRef.value?.reset();
+    }, 1200);
+    return;
+  }
+
+  if (!activeAccountId.value) {
+    patternStatus.value = "error";
+    patternError.value = "当前没有激活账号";
+    return;
+  }
+
+  patternError.value = "";
+  const password = await getPatternUnlockPassword(activeAccountId.value, pattern);
+  if (!password) {
+    patternStatus.value = "error";
+    patternError.value = "手势密码错误，请重新绘制";
+    setTimeout(() => {
+      patternStatus.value = "normal";
+      patternLockRef.value?.reset();
+    }, 1200);
+    return;
+  }
+
+  patternStatus.value = "success";
+  walletPassword.value = password;
+  await signAndBroadcast();
+}
+
 async function signAndBroadcast() {
   const nextConfirmation = confirmation.value;
 
@@ -1236,12 +1299,22 @@ async function signAndBroadcast() {
   }
 
   if (!walletPassword.value.trim()) {
+    if (hasPattern.value && signAuthMode.value === "pattern") {
+      patternStatus.value = "error";
+      patternError.value = "请在上方九宫格绘制手势以授权签名";
+    }
     transferFeedback.value = {
       stage: "sign",
       category: "signing",
-      title: "需要钱包密码",
-      message: "发送前必须再次输入钱包密码，才能在本地解锁签名器。",
-      hints: ["输入钱包密码后重新点击“签名并广播”"],
+      title: hasPattern.value && signAuthMode.value === "pattern" ? "请绘制手势签名" : "需要钱包密码",
+      message: hasPattern.value && signAuthMode.value === "pattern"
+        ? "请滑动绘制手势连线，系统将验证并在本地签名广播交易。"
+        : "发送前必须再次输入钱包密码，才能在本地解锁签名器。",
+      hints: [
+        hasPattern.value && signAuthMode.value === "pattern"
+          ? "绘制正确的手势图案即可自动完成签名"
+          : "输入钱包密码后重新点击“签名并广播”",
+      ],
     };
     return;
   }
@@ -1281,6 +1354,13 @@ async function signAndBroadcast() {
         confirmationId: nextConfirmation.confirmationId,
       });
     } catch (error) {
+      if (hasPattern.value && signAuthMode.value === "pattern") {
+        patternStatus.value = "error";
+        setTimeout(() => {
+          patternStatus.value = "normal";
+          patternLockRef.value?.reset();
+        }, 1200);
+      }
       transferFeedback.value = describeTransferError({
         error,
         stage: "sign",
@@ -1356,6 +1436,9 @@ async function signAndBroadcast() {
 
     clearSendDraft();
     walletPassword.value = "";
+    patternStatus.value = "normal";
+    patternError.value = "";
+    patternLockRef.value?.reset();
 
     await router.push({
       name: "wallet-tx-detail",
@@ -1699,15 +1782,89 @@ async function signAndBroadcast() {
             <strong>{{ confirmation.gas.estimatedNetworkFee }} {{ confirmation.networkSymbol }}</strong>
           </div>
         </div>
-        <label class="field">
-          <span>钱包密码</span>
-          <input
-            v-model="walletPassword"
-            autocomplete="current-password"
-            placeholder="发送时再次输入钱包密码"
-            type="password"
-          />
-        </label>
+        <!-- Signing Authentication: Pattern Gesture or Password -->
+        <div v-if="hasPattern" style="display: flex; flex-direction: column; gap: 10px;">
+          <div
+            style="
+              display: flex;
+              background: rgba(255, 255, 255, 0.05);
+              padding: 3px;
+              border-radius: var(--radius-sm);
+              gap: 4px;
+            "
+          >
+            <button
+              :class="['button', signAuthMode === 'pattern' ? 'button--secondary' : 'button--ghost']"
+              type="button"
+              style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
+              @click="signAuthMode = 'pattern'"
+            >
+              手势签名
+            </button>
+            <button
+              :class="['button', signAuthMode === 'password' ? 'button--secondary' : 'button--ghost']"
+              type="button"
+              style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
+              @click="signAuthMode = 'password'"
+            >
+              密码签名
+            </button>
+          </div>
+
+          <!-- Mode 1: Gesture Pattern Lock -->
+          <div
+            v-if="signAuthMode === 'pattern'"
+            style="
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 10px;
+              padding: 8px 0 4px;
+            "
+          >
+            <span style="font-size: 0.8rem; color: var(--text-secondary);">
+              绘制手势连线授权签名并广播
+            </span>
+            <PatternLock
+              ref="patternLockRef"
+              :size="220"
+              :disabled="isBroadcasting"
+              :status="patternStatus"
+              @completed="onSignPatternCompleted"
+            />
+            <p v-if="patternError" class="helper-text helper-text--error" style="margin: 0; text-align: center;">
+              {{ patternError }}
+            </p>
+          </div>
+
+          <!-- Mode 2: Password Input -->
+          <label v-else class="field">
+            <span>钱包密码</span>
+            <input
+              v-model="walletPassword"
+              autocomplete="current-password"
+              placeholder="发送时再次输入钱包密码"
+              type="password"
+            />
+          </label>
+        </div>
+
+        <!-- No pattern set: default password field -->
+        <div v-else style="display: flex; flex-direction: column; gap: 6px;">
+          <label class="field">
+            <span>钱包密码</span>
+            <input
+              v-model="walletPassword"
+              autocomplete="current-password"
+              placeholder="发送时再次输入钱包密码"
+              type="password"
+            />
+          </label>
+          <span style="font-size: 0.72rem; color: var(--text-muted);">
+            提示：可在【设置 -> 安全与锁屏】中配置手势连线，无需每次输入密码即可快速手势签名。
+          </span>
+        </div>
+
         <p v-if="!isTauriRuntime" class="helper-text">
           浏览器预览模式不执行真实签名。
         </p>
@@ -1727,7 +1884,13 @@ async function signAndBroadcast() {
             :disabled="isBroadcasting || (confirmation ? !isConfirmationCurrent(confirmation) : true)"
             @click="signAndBroadcast"
           >
-            {{ isBroadcasting ? "正在签名并广播..." : "签名并广播" }}
+            {{
+              isBroadcasting
+                ? "正在签名并广播..."
+                : (hasPattern && signAuthMode === "pattern"
+                    ? (walletPassword ? "签名并广播" : "滑动上方手势签名")
+                    : "签名并广播")
+            }}
           </button>
           <button
             class="button button--ghost"

@@ -36,6 +36,11 @@ const accountMonogram = computed(() => {
 function checkAccountPattern() {
   if (activeAccountId.value) {
     accountHasPattern.value = hasPatternLock(activeAccountId.value);
+    if (accountHasPattern.value) {
+      unlockMode.value = "pattern";
+    } else {
+      unlockMode.value = "password";
+    }
   }
 }
 
@@ -58,6 +63,13 @@ async function selectAccount(accountId: string) {
 
     if (!didSwitch) {
       formError.value = "当前无法切换到这个账号，请稍后重试。";
+    } else {
+      accountHasPattern.value = hasPatternLock(accountId);
+      if (accountHasPattern.value) {
+        unlockMode.value = "pattern";
+      } else {
+        unlockMode.value = "password";
+      }
     }
   } finally {
     isSelectingAccountId.value = null;
@@ -114,24 +126,6 @@ async function onPatternCompleted(pattern: number[]) {
     isSubmitting.value = false;
   }
 }
-
-async function triggerBiometricUnlock() {
-  formError.value = "";
-  isSubmitting.value = true;
-
-  try {
-    const didUnlock = await sessionStore.unlockWithBiometric();
-
-    if (didUnlock) {
-      await router.replace(sessionStore.lastVisitedRoute || "/wallet");
-    } else {
-      formError.value =
-        sessionStore.lastUnlockError || "生物识别验证未通过，请使用密码解锁";
-    }
-  } finally {
-    isSubmitting.value = false;
-  }
-}
 </script>
 
 <template>
@@ -183,43 +177,6 @@ async function triggerBiometricUnlock() {
         </div>
       </div>
 
-      <!-- Biometric Quick Unlock Banner if enabled -->
-      <div v-if="activeProfile?.isBiometricEnabled" style="width: 100%;">
-        <button
-          class="button button--secondary"
-          type="button"
-          :disabled="isSubmitting"
-          style="
-            width: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 10px 16px;
-            background: rgba(99, 102, 241, 0.12);
-            border: 1px solid rgba(99, 102, 241, 0.3);
-            color: #a5b4fc;
-          "
-          @click="triggerBiometricUnlock"
-        >
-          <svg
-            width="18"
-            height="18"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          >
-            <path d="M12 2a10 10 0 0 0-10 10v2a10 10 0 0 0 20 0v-2a10 10 0 0 0-10-10Z" />
-            <path d="M12 6a6 6 0 0 0-6 6v2a6 6 0 0 0 12 0v-2a6 6 0 0 0-6-6Z" />
-            <path d="M12 10a2 2 0 0 0-2 2v2a2 2 0 0 0 4 0v-2a2 2 0 0 0-2-2Z" />
-          </svg>
-          <strong>生物识别快速解锁</strong>
-        </button>
-      </div>
-
       <!-- Unlock Mode Switcher Tabs -->
       <div
         style="
@@ -232,20 +189,20 @@ async function triggerBiometricUnlock() {
         "
       >
         <button
-          :class="['button', unlockMode === 'password' ? 'button--secondary' : 'button--ghost']"
-          type="button"
-          style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
-          @click="unlockMode = 'password'"
-        >
-          标准解锁
-        </button>
-        <button
           :class="['button', unlockMode === 'pattern' ? 'button--secondary' : 'button--ghost']"
           type="button"
           style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
           @click="unlockMode = 'pattern'"
         >
-          手势连线
+          手势解锁
+        </button>
+        <button
+          :class="['button', unlockMode === 'password' ? 'button--secondary' : 'button--ghost']"
+          type="button"
+          style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
+          @click="unlockMode = 'password'"
+        >
+          密码解锁
         </button>
       </div>
 
@@ -325,7 +282,7 @@ async function triggerBiometricUnlock() {
             type="button"
             @click="unlockMode = 'password'"
           >
-            切换到标准解锁
+            切换到密码解锁
           </button>
         </template>
       </div>

@@ -4,6 +4,8 @@ import { createPinia, setActivePinia } from "pinia";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getAddress } from "viem";
 import SendPage from "../wallet/SendPage.vue";
+import PatternLock from "../../components/PatternLock.vue";
+import { savePatternLock } from "../../services/patternLock";
 import { clearPersistedUiState, patchWalletScopedUiState } from "../../services/uiState";
 import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
@@ -680,5 +682,132 @@ describe("SendPage", () => {
 
     expect(wrapper.text()).toContain("合约");
     expect(wrapper.text()).toContain(tokenAddress);
+  });
+
+  it("defaults to gesture pattern signing when pattern is configured and signs on completed gesture", async () => {
+    bootstrapSendSession();
+    const recipientAddress = "0x2222222222222222222222222222222222222222";
+    await savePatternLock("account-1", [0, 1, 2, 5, 8], "gesture-secret");
+
+    estimateTransferPreviewMock.mockResolvedValue({
+      assetType: "native",
+      feeMode: "eip1559",
+      nonce: "1",
+      gasLimit: "21000",
+      gasPriceWei: null,
+      gasPriceGwei: null,
+      maxFeePerGasWei: "100",
+      maxFeePerGasGwei: "0.0000001",
+      maxPriorityFeePerGasWei: "10",
+      maxPriorityFeePerGasGwei: "0.00000001",
+      estimatedNetworkFee: "0.001",
+      parsedAmount: "1000000000000000000",
+    });
+    prepareTransferConfirmationMock.mockResolvedValue({
+      confirmationId: "confirmation-gesture",
+    });
+    signTransferTransactionMock.mockResolvedValue({
+      rawTransaction: "0xdeadbeef",
+      txHash: "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    });
+    broadcastSignedTransactionMock.mockResolvedValue(
+      "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    );
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await wrapper.get('input[placeholder="0x..."]').setValue(recipientAddress);
+    await wrapper.get('input[placeholder="0.00"]').setValue("1");
+    await wrapper.get('button[type="submit"]').trigger("submit");
+    await flushPromises();
+
+    // Verify pattern mode is the default when pattern lock is set
+    expect(wrapper.text()).toContain("手势签名");
+    expect(wrapper.text()).toContain("绘制手势连线授权签名并广播");
+
+    const patternComponent = wrapper.findComponent(PatternLock);
+    expect(patternComponent.exists()).toBe(true);
+
+    // Complete the gesture pattern
+    patternComponent.vm.$emit("completed", [0, 1, 2, 5, 8]);
+    await vi.waitFor(() => {
+      expect(signTransferTransactionMock).toHaveBeenCalledWith({
+        accountId: "account-1",
+        password: "gesture-secret",
+        confirmationId: "confirmation-gesture",
+      });
+    });
+    expect(broadcastSignedTransactionMock).toHaveBeenCalled();
+  });
+
+  it("allows switching between gesture pattern and password signing modes", async () => {
+    bootstrapSendSession();
+    const recipientAddress = "0x2222222222222222222222222222222222222222";
+    await savePatternLock("account-1", [0, 1, 2, 5, 8], "gesture-secret");
+
+    estimateTransferPreviewMock.mockResolvedValue({
+      assetType: "native",
+      feeMode: "eip1559",
+      nonce: "2",
+      gasLimit: "21000",
+      gasPriceWei: null,
+      gasPriceGwei: null,
+      maxFeePerGasWei: "100",
+      maxFeePerGasGwei: "0.0000001",
+      maxPriorityFeePerGasWei: "10",
+      maxPriorityFeePerGasGwei: "0.00000001",
+      estimatedNetworkFee: "0.001",
+      parsedAmount: "1000000000000000000",
+    });
+    prepareTransferConfirmationMock.mockResolvedValue({
+      confirmationId: "confirmation-switch-mode",
+    });
+    signTransferTransactionMock.mockResolvedValue({
+      rawTransaction: "0xdeadbeef",
+      txHash: "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    });
+    broadcastSignedTransactionMock.mockResolvedValue(
+      "0xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    );
+
+    const wrapper = mount(SendPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await flushPromises();
+    await wrapper.get('input[placeholder="0x..."]').setValue(recipientAddress);
+    await wrapper.get('input[placeholder="0.00"]').setValue("1");
+    await wrapper.get('button[type="submit"]').trigger("submit");
+    await flushPromises();
+
+    // Switch to password mode
+    const pwdButton = findButtonByText(wrapper, "密码签名");
+    expect(pwdButton).toBeDefined();
+    await pwdButton!.trigger("click");
+    await flushPromises();
+
+    const passwordInput = wrapper.get('input[placeholder="发送时再次输入钱包密码"]');
+    await passwordInput.setValue("manual-password");
+    await findButtonByText(wrapper, "签名并广播")!.trigger("click");
+    await flushPromises();
+
+    expect(signTransferTransactionMock).toHaveBeenCalledWith({
+      accountId: "account-1",
+      password: "manual-password",
+      confirmationId: "confirmation-switch-mode",
+    });
   });
 });

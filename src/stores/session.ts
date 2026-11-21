@@ -5,11 +5,6 @@ import {
   clearWalletScopedUiState,
   patchWalletScopedUiState,
 } from "../services/uiState";
-import {
-  clearBiometricUnlockCredential,
-  getBiometricUnlockPassword,
-  saveBiometricUnlockCredential,
-} from "../services/biometrics";
 import { getPatternUnlockPassword } from "../services/patternLock";
 import {
   deleteWalletAccount as deleteWalletAccountBridge,
@@ -178,25 +173,7 @@ export const useSessionStore = defineStore("session", () => {
 
     applyWalletProfile(profile, { unlocked: true });
     lastUnlockError.value = "";
-    if (profile.isBiometricEnabled) {
-      saveBiometricUnlockCredential(profile.accountId, password);
-    }
     return true;
-  }
-
-  async function unlockWithBiometric() {
-    if (!activeAccountId.value) {
-      lastUnlockError.value = "当前没有可解锁的账号";
-      return false;
-    }
-
-    const password = await getBiometricUnlockPassword(activeAccountId.value);
-    if (!password) {
-      lastUnlockError.value = "生物识别未通过或暂无设备凭据，请使用密码解锁一次以激活";
-      return false;
-    }
-
-    return unlockWallet(password);
   }
 
   async function unlockWithPattern(pattern: number[]) {
@@ -284,10 +261,6 @@ export const useSessionStore = defineStore("session", () => {
 
     if (!profile) {
       return false;
-    }
-
-    if (!nextValue && activeAccountId.value) {
-      clearBiometricUnlockCredential(activeAccountId.value);
     }
 
     upsertWalletProfile(profile, {
@@ -402,7 +375,6 @@ export const useSessionStore = defineStore("session", () => {
     statusLabel,
     deleteWalletAccount,
     unlockWallet,
-    unlockWithBiometric,
     unlockWithPattern,
     updateLastVisitedRoute,
     walletLabel,

@@ -5,7 +5,6 @@ import { RouterLink, useRouter } from "vue-router";
 import PatternLock from "../../components/PatternLock.vue";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
-import { checkBiometricCapability } from "../../services/biometrics";
 import { clearPatternLock, hasPatternLock, savePatternLock } from "../../services/patternLock";
 import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
@@ -16,8 +15,6 @@ const sessionStore = useSessionStore();
 const networksStore = useNetworksStore();
 
 const securityMessage = ref("");
-const isSavingBiometric = ref(false);
-const biometricCapability = ref("检测中...");
 const hasPattern = ref(false);
 const showPatternSetup = ref(false);
 const patternStep = ref<"draw" | "confirm">("draw");
@@ -31,7 +28,6 @@ const isAddressCopied = ref(false);
 const {
   activeAccountId,
   hasBackedUpMnemonic,
-  isBiometricEnabled,
   primaryAddress,
   walletLabel,
   walletSecretKind,
@@ -56,10 +52,8 @@ function checkPatternState() {
   }
 }
 
-onMounted(async () => {
+onMounted(() => {
   checkPatternState();
-  const cap = await checkBiometricCapability();
-  biometricCapability.value = cap.available ? cap.typeLabel : "当前环境不可用";
 });
 
 watch(activeAccountId, checkPatternState);
@@ -80,19 +74,6 @@ async function copyPrimaryAddress() {
 async function lockWallet() {
   sessionStore.lockWallet();
   await router.push("/unlock");
-}
-
-async function toggleBiometric(event: Event) {
-  const target = event.target as HTMLInputElement;
-  securityMessage.value = "";
-  isSavingBiometric.value = true;
-
-  try {
-    const updated = await sessionStore.setBiometricEnabled(target.checked);
-    securityMessage.value = updated ? "生物识别状态已更新" : "当前环境无法更新生物识别";
-  } finally {
-    isSavingBiometric.value = false;
-  }
 }
 
 function openPatternSetup() {
@@ -332,31 +313,12 @@ function removePattern() {
       <!-- Category 2: Security & Unlock Center -->
       <SectionCard title="安全与锁屏" :tone="securityTone">
         <div style="display: flex; flex-direction: column; gap: 14px;">
-          <!-- Biometric Toggle Row -->
-          <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
-            <div>
-              <strong style="font-size: 0.88rem;">生物识别解锁</strong>
-              <p style="margin: 2px 0 0; font-size: 0.74rem; color: var(--text-secondary);">
-                {{ biometricCapability }}
-              </p>
-            </div>
-            <label class="toggle-row" style="margin: 0;">
-              <input
-                :checked="isBiometricEnabled"
-                :disabled="isSavingBiometric"
-                type="checkbox"
-                @change="toggleBiometric"
-              />
-              <span style="font-size: 0.8rem;">{{ isSavingBiometric ? "更新中..." : (isBiometricEnabled ? "已启用" : "未开启") }}</span>
-            </label>
-          </div>
-
           <!-- Pattern Lock Row -->
           <div style="display: flex; justify-content: space-between; align-items: center; padding-bottom: 12px; border-bottom: 1px solid rgba(255, 255, 255, 0.06);">
             <div>
-              <strong style="font-size: 0.88rem;">手势连线解锁</strong>
+              <strong style="font-size: 0.88rem;">手势连线密码</strong>
               <p style="margin: 2px 0 0; font-size: 0.74rem; color: var(--text-secondary);">
-                九宫格 3x3 滑动连线快速解锁
+                九宫格 3x3 滑动连线，支持默认解锁及转账快速签名
               </p>
             </div>
             <div style="display: flex; align-items: center; gap: 6px;">

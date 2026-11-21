@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink, useRouter } from "vue-router";
-import { saveBiometricUnlockCredential } from "../../services/biometrics";
 import {
   cancelPendingWallet,
   finalizePendingWallet,
@@ -167,9 +166,6 @@ async function finalizeBackup() {
       backupAccessToken: onboardingStore.backupAccessToken,
       confirmedBackup: confirmed.value,
     });
-    if (profile.isBiometricEnabled && backupPassword.value) {
-      saveBiometricUnlockCredential(profile.accountId, backupPassword.value);
-    }
     onboardingStore.clearDraft();
     sessionStore.applyWalletProfile(profile, { unlocked: true });
     await router.replace("/wallet");
