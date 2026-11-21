@@ -87,6 +87,13 @@ function syncManifest(filePath) {
   updateFile(filePath, (source) => {
     let next = source;
 
+    if (!next.includes('android:roundIcon=')) {
+      next = next.replace(
+        /(android:icon="@mipmap\/ic_launcher")/u,
+        '$1\n        android:roundIcon="@mipmap/ic_launcher_round"',
+      );
+    }
+
     next = next
       .replace(/\n[^\S\r\n]*<uses-permission android:name="android\.permission\.CAMERA" \/>\n?/gu, "\n")
       .replace(
@@ -144,3 +151,8 @@ syncTheme(nightThemesPath);
 
 console.log(`Synced Android system bar defaults in ${path.relative(projectRoot, androidRoot)}`);
 NODE
+
+if [[ -f "$SCRIPT_DIR/sync-android-icons.sh" ]]; then
+  bash "$SCRIPT_DIR/sync-android-icons.sh"
+fi
+

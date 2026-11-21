@@ -280,6 +280,11 @@ if [[ ! -d "$PROJECT_ROOT/src-tauri/gen/android" ]]; then
   (cd "$PROJECT_ROOT" && pnpm tauri android init --ci)
 fi
 
+# Ensure custom Android launcher icons are synced
+if [[ -f "$PROJECT_ROOT/scripts/sync-android-icons.sh" ]]; then
+  bash "$PROJECT_ROOT/scripts/sync-android-icons.sh"
+fi
+
 # 6. Build APK
 BUILD_CMD=(pnpm tauri android build --apk)
 TARGET_LABEL="universal"
