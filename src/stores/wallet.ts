@@ -296,17 +296,25 @@ export const useWalletStore = defineStore("wallet", () => {
   const trackedTokens = ref<TrackedToken[]>([...defaultTrackedTokens]);
   const recentActivity = ref<ActivityItem[]>(defaultActivity);
   const addressBook = ref<AddressBookEntry[]>([]);
+  let isHydratingScope = false;
 
   function applyWalletScopedState(accountId: string | null) {
     const persistedState = loadWalletScopedUiState(accountId);
 
-    persistedScopeAccountId.value = accountId;
-    trackedTokens.value = [
-      ...hydrateCustomTrackedTokens(persistedState.customTokens),
-      ...defaultTrackedTokens,
-    ];
-    recentActivity.value = hydrateRecentActivity(persistedState.recentActivity);
-    addressBook.value = hydrateAddressBook(persistedState.addressBook);
+    isHydratingScope = true;
+    try {
+      persistedScopeAccountId.value = accountId;
+      trackedTokens.value = [
+        ...hydrateCustomTrackedTokens(persistedState.customTokens),
+        ...defaultTrackedTokens,
+      ];
+      recentActivity.value = hydrateRecentActivity(persistedState.recentActivity);
+      addressBook.value = hydrateAddressBook(persistedState.addressBook);
+    } finally {
+      queueMicrotask(() => {
+        isHydratingScope = false;
+      });
+    }
   }
 
   applyWalletScopedState(activeAccountId.value);
@@ -704,6 +712,7 @@ export const useWalletStore = defineStore("wallet", () => {
   watch(
     trackedTokens,
     (nextTrackedTokens) => {
+      if (isHydratingScope) return;
       patchWalletScopedUiState(persistedScopeAccountId.value, {
         customTokens: nextTrackedTokens.filter((token) => token.source === "custom"),
       });
@@ -716,6 +725,7 @@ export const useWalletStore = defineStore("wallet", () => {
   watch(
     recentActivity,
     (nextRecentActivity) => {
+      if (isHydratingScope) return;
       patchWalletScopedUiState(persistedScopeAccountId.value, {
         recentActivity: nextRecentActivity.filter((item) => item.id !== "empty-state"),
       });
@@ -728,6 +738,7 @@ export const useWalletStore = defineStore("wallet", () => {
   watch(
     addressBook,
     (nextAddressBook) => {
+      if (isHydratingScope) return;
       patchWalletScopedUiState(persistedScopeAccountId.value, {
         addressBook: nextAddressBook,
       });

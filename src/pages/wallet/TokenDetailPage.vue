@@ -369,7 +369,7 @@ async function openExternal(url: string | null) {
 
       <!-- Recent Submitted Activity -->
       <SectionCard v-if="relatedActivity.length" title="相关记录">
-        <div class="token-list">
+        <div class="token-list scroll-container--compact">
           <RouterLink
             v-for="item in relatedActivity"
             :key="item.id"

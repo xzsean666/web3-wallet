@@ -39,11 +39,41 @@ describe("patternLock service", () => {
     const pattern = [0, 1, 2, 4, 6];
     await savePatternLock(accountId, pattern, "super-secret-password");
 
+    // Verify it is encrypted with AES-GCM and not plaintext Base64
+    const stored = JSON.parse(localStorage.getItem(`web3_wallet_pattern_${accountId}`)!);
+    expect(stored.encryptedPassword).toBeTypeOf("object");
+    expect(stored.encryptedPassword).toHaveProperty("ciphertext");
+    expect(stored.encryptedPassword).toHaveProperty("iv");
+    expect(stored.encryptedPassword).toHaveProperty("salt");
+    expect(JSON.stringify(stored)).not.toContain("super-secret-password");
+
     const retrieved = await getPatternUnlockPassword(accountId, [0, 1, 2, 4, 6]);
     expect(retrieved).toBe("super-secret-password");
 
     const failed = await getPatternUnlockPassword(accountId, [0, 1, 2, 4, 7]);
     expect(failed).toBeNull();
+  });
+
+  it("handles legacy base64-stored pattern locks backwards-compatibly", async () => {
+    const legacyPattern = [0, 1, 2, 4, 6];
+    const legacySalt = "web3_wallet_pattern_salt_2026_";
+    const encoder = new TextEncoder();
+    const data = encoder.encode(`${legacySalt}${legacyPattern.join("-")}`);
+    const hashBuffer = await crypto.subtle.digest("SHA-256", data);
+    const patternHash = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    const legacyPayload = {
+      accountId,
+      patternHash,
+      encryptedPassword: btoa(encodeURIComponent("legacy-plain-pwd")),
+      updatedAt: Date.now(),
+    };
+    localStorage.setItem(`web3_wallet_pattern_${accountId}`, JSON.stringify(legacyPayload));
+
+    const retrieved = await getPatternUnlockPassword(accountId, legacyPattern);
+    expect(retrieved).toBe("legacy-plain-pwd");
   });
 
   it("clears pattern lock", async () => {

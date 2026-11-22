@@ -6,6 +6,8 @@ import PatternLock from "../../components/PatternLock.vue";
 import SectionCard from "../../components/SectionCard.vue";
 import WalletChrome from "../../components/WalletChrome.vue";
 import { clearPatternLock, hasPatternLock, savePatternLock } from "../../services/patternLock";
+import { getAppOverview } from "../../services/system";
+import { unlockWallet as unlockWalletBridge } from "../../services/walletBridge";
 import { useNetworksStore } from "../../stores/networks";
 import { useSessionStore } from "../../stores/session";
 import { shortenAddress } from "../../utils/format";
@@ -24,6 +26,7 @@ const patternFeedback = ref("");
 const patternStatus = ref<"normal" | "success" | "error">("normal");
 const patternLockRef = ref<InstanceType<typeof PatternLock> | null>(null);
 const isAddressCopied = ref(false);
+const appVersion = ref("v0.1.10");
 
 const {
   activeAccountId,
@@ -52,8 +55,16 @@ function checkPatternState() {
   }
 }
 
-onMounted(() => {
+onMounted(async () => {
   checkPatternState();
+  try {
+    const overview = await getAppOverview();
+    if (overview?.appVersion && overview.appVersion !== "preview") {
+      appVersion.value = `v${overview.appVersion}`;
+    }
+  } catch {
+    // Keep default version
+  }
 });
 
 watch(activeAccountId, checkPatternState);
@@ -130,6 +141,17 @@ async function onPatternDrawn(pattern: number[]) {
   if (!activeAccountId.value) return;
 
   try {
+    const verifiedProfile = await unlockWalletBridge({
+      accountId: activeAccountId.value,
+      password: patternPassword.value.trim(),
+    });
+
+    if (!verifiedProfile) {
+      patternStatus.value = "error";
+      patternFeedback.value = "钱包密码不正确，请重新输入";
+      return;
+    }
+
     await savePatternLock(activeAccountId.value, pattern, patternPassword.value.trim());
     patternStatus.value = "success";
     patternFeedback.value = "手势连线密码已成功设置！";
@@ -138,6 +160,7 @@ async function onPatternDrawn(pattern: number[]) {
       showPatternSetup.value = false;
     }, 1000);
   } catch (error) {
+    patternStatus.value = "error";
     patternFeedback.value = error instanceof Error ? error.message : "设置手势失败";
   }
 }
@@ -412,22 +435,28 @@ function removePattern() {
       </SectionCard>
 
       <!-- Category 3: System & Info -->
-      <SectionCard title="关于与状态">
-        <div class="key-value-list">
-          <div class="key-value-row">
-            <span>当前版本</span>
-            <strong>v0.1.7</strong>
-          </div>
-          <div class="key-value-row">
-            <span>助记词备份</span>
-            <strong>{{ backupLabel }}</strong>
-          </div>
-          <div class="key-value-row">
-            <span>存储方案</span>
-            <strong>Stronghold + SQLite</strong>
+      <details class="collapsible-card">
+        <summary class="collapsible-summary">
+          <span>ℹ️ 关于与状态 ({{ appVersion }})</span>
+          <span class="collapsible-chevron">›</span>
+        </summary>
+        <div class="collapsible-content">
+          <div class="key-value-list">
+            <div class="key-value-row">
+              <span>当前版本</span>
+              <strong>{{ appVersion }}</strong>
+            </div>
+            <div class="key-value-row">
+              <span>助记词备份</span>
+              <strong>{{ backupLabel }}</strong>
+            </div>
+            <div class="key-value-row">
+              <span>存储方案</span>
+              <strong>Stronghold + SQLite</strong>
+            </div>
           </div>
         </div>
-      </SectionCard>
+      </details>
     </section>
   </WalletChrome>
 </template>

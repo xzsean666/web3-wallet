@@ -60,7 +60,7 @@ test.describe("Playwright wallet flows", () => {
 
     await page.getByLabel("输入解锁密码").fill("wrong-secret");
     await page.getByRole("button", { name: "解锁钱包" }).click();
-    await expect(page.getByText(/密码/)).toBeVisible();
+    await expect(page.locator(".helper-text--error")).toBeVisible();
     await expect(page).toHaveURL(/\/unlock$/);
 
     await page.getByLabel("输入解锁密码").fill(WALLET_PASSWORD);

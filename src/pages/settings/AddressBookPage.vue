@@ -109,71 +109,10 @@ function deleteContact(entry: AddressBookEntry) {
       </span>
     </section>
 
-    <section class="page-grid page-grid--2">
-      <!-- Add / Edit Contact Form -->
-      <SectionCard :title="currentDraftMatch ? '编辑联系人' : '添加联系人'" description="设置收款地址别名与备注">
-        <form class="form-grid" @submit.prevent="saveContact">
-          <label class="field">
-            <span>联系人名称</span>
-            <input v-model="contactLabel" autocomplete="off" placeholder="例如：Main Treasury" />
-          </label>
-
-          <label class="field">
-            <span>联系人地址</span>
-            <input v-model="contactAddress" autocomplete="off" placeholder="0x..." />
-          </label>
-
-          <label class="field">
-            <span>备注</span>
-            <textarea
-              v-model="contactNote"
-              placeholder="例如：打款专用地址 / 交易所充值地址"
-              rows="2"
-            />
-          </label>
-
-          <p v-if="currentDraftMatch" class="helper-text">
-            当前地址已存在于地址簿中，再次保存会直接更新该联系人。
-          </p>
-
-          <ul v-if="formErrors.length" class="bullet-list helper-text helper-text--error">
-            <li v-for="error in formErrors" :key="error">{{ error }}</li>
-          </ul>
-
-          <p
-            v-if="feedback"
-            :class="['helper-text', feedback.tone === 'error' ? 'helper-text--error' : 'helper-text--success']"
-          >
-            {{ feedback.message }}
-          </p>
-
-          <div class="form-actions">
-            <button class="button button--primary" type="submit">
-              {{ currentDraftMatch ? "更新联系人" : "保存联系人" }}
-            </button>
-            <button class="button button--ghost" type="button" @click="resetForm">清空表单</button>
-          </div>
-        </form>
-      </SectionCard>
-
-      <!-- Usage Notes Card -->
-      <SectionCard title="安全提示" description="本地加密与离线存储">
-        <div class="card-stack" style="gap: 8px;">
-          <p class="helper-text">联系人仅保存在当前设备本地，不会上传至任何服务器，也绝不触碰私钥或密码。</p>
-          <p class="helper-text">地址簿按网络隔离，避免相同地址在不同链网络下被误发。</p>
-          <p class="helper-text">从列表点击“发送”可直接回填收款地址，转账金额仍需在发送页手动确认。</p>
-        </div>
-        <div class="form-actions" style="margin-top: 10px;">
-          <RouterLink class="button button--secondary button--small" :to="{ name: 'wallet-send' }">去发送页</RouterLink>
-          <RouterLink class="button button--ghost button--small" to="/settings/networks">切换网络</RouterLink>
-        </div>
-      </SectionCard>
-    </section>
-
-    <!-- Saved Contacts List -->
+    <!-- Saved Contacts List (Top Priority) -->
     <section class="page-grid page-grid--1">
       <SectionCard title="已保存联系人" :description="`${activeNetwork.name} 网络下的联系人列表`">
-        <div v-if="contacts.length" class="token-list">
+        <div v-if="contacts.length" class="token-list scroll-container--compact">
           <article v-for="entry in contacts" :key="entry.id" class="token-row">
             <div class="token-row__content">
               <div style="display: flex; align-items: center; gap: 8px;">
@@ -207,9 +146,80 @@ function deleteContact(entry: AddressBookEntry) {
           </article>
         </div>
         <p v-else class="empty-state">
-          当前网络还没有保存联系人。在上方表单中录入，或从发送页自动保存。
+          当前网络还没有保存联系人。在下方表单中录入，或从发送页自动保存。
         </p>
       </SectionCard>
     </section>
+
+    <!-- Add / Edit Contact Form -->
+    <section class="page-grid page-grid--1">
+      <SectionCard :title="currentDraftMatch ? '编辑联系人' : '添加联系人'" description="设置收款地址别名与备注">
+        <form class="form-grid" @submit.prevent="saveContact">
+          <div class="form-grid-row-2">
+            <label class="field">
+              <span>联系人名称</span>
+              <input v-model="contactLabel" autocomplete="off" placeholder="例如：Main Treasury" />
+            </label>
+
+            <label class="field">
+              <span>联系人地址</span>
+              <input v-model="contactAddress" autocomplete="off" placeholder="0x..." />
+            </label>
+          </div>
+
+          <label class="field">
+            <span>备注</span>
+            <input
+              v-model="contactNote"
+              placeholder="例如：打款专用地址 / 交易所充值地址"
+            />
+          </label>
+
+          <p v-if="currentDraftMatch" class="helper-text">
+            当前地址已存在于地址簿中，再次保存会直接更新该联系人。
+          </p>
+
+          <ul v-if="formErrors.length" class="bullet-list helper-text helper-text--error">
+            <li v-for="error in formErrors" :key="error">{{ error }}</li>
+          </ul>
+
+          <p
+            v-if="feedback"
+            :class="['helper-text', feedback.tone === 'error' ? 'helper-text--error' : 'helper-text--success']"
+          >
+            {{ feedback.message }}
+          </p>
+
+          <div class="form-actions form-actions--compact">
+            <button class="button button--primary button--small" type="submit">
+              {{ currentDraftMatch ? "更新联系人" : "保存联系人" }}
+            </button>
+            <button class="button button--ghost button--small" type="button" @click="resetForm">清空表单</button>
+          </div>
+        </form>
+      </SectionCard>
+    </section>
+
+    <!-- Safety Notes (Collapsible) -->
+    <details class="collapsible-card">
+      <summary class="collapsible-summary">
+        <span style="display: flex; align-items: center; gap: 6px;">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+          </svg>
+          地址簿安全与本地加密提示
+        </span>
+        <span class="collapsible-chevron">›</span>
+      </summary>
+      <div class="collapsible-content">
+        <p class="helper-text" style="margin: 0 0 6px;">联系人仅保存在当前设备本地，不会上传至任何服务器，也绝不触碰私钥或密码。</p>
+        <p class="helper-text" style="margin: 0 0 8px;">地址簿按网络隔离，避免相同地址在不同链网络下被误发。</p>
+        <div class="inline-actions">
+          <RouterLink class="button button--secondary button--small" :to="{ name: 'wallet-send' }">去发送页</RouterLink>
+          <RouterLink class="button button--ghost button--small" to="/settings/networks">切换网络</RouterLink>
+        </div>
+      </div>
+    </details>
   </WalletChrome>
 </template>

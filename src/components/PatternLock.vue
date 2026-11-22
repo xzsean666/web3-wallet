@@ -27,6 +27,26 @@ const isDrawing = ref(false);
 const selectedDots = ref<number[]>([]);
 const currentPointer = ref<{ x: number; y: number } | null>(null);
 
+// Intermediate points that must be traversed when drawing straight lines across collinear points
+const INTERMEDIATE_POINTS: Record<string, number> = {
+  "0-2": 1,
+  "2-0": 1,
+  "3-5": 4,
+  "5-3": 4,
+  "6-8": 7,
+  "8-6": 7,
+  "0-6": 3,
+  "6-0": 3,
+  "1-7": 4,
+  "7-1": 4,
+  "2-8": 5,
+  "8-2": 5,
+  "0-8": 4,
+  "8-0": 4,
+  "2-6": 4,
+  "6-2": 4,
+};
+
 // Calculate 3x3 dot positions
 const dots = computed(() => {
   const padding = props.size * 0.18;
@@ -101,6 +121,13 @@ function handleMove(clientX: number, clientY: number) {
   const hitDot = findDotAtPosition(coords.x, coords.y);
 
   if (hitDot !== null && !selectedDots.value.includes(hitDot)) {
+    if (selectedDots.value.length > 0) {
+      const lastDot = selectedDots.value[selectedDots.value.length - 1];
+      const intermediate = INTERMEDIATE_POINTS[`${lastDot}-${hitDot}`];
+      if (intermediate !== undefined && !selectedDots.value.includes(intermediate)) {
+        selectedDots.value.push(intermediate);
+      }
+    }
     selectedDots.value.push(hitDot);
     emit("change", selectedDots.value);
     if (navigator?.vibrate) {
@@ -161,12 +188,19 @@ defineExpose({
   selectedDots,
 });
 
+function onWindowMouseMove(e: MouseEvent) {
+  if (!isDrawing.value || props.disabled) return;
+  handleMove(e.clientX, e.clientY);
+}
+
 onMounted(() => {
   window.addEventListener("mouseup", handleEnd);
+  window.addEventListener("mousemove", onWindowMouseMove);
 });
 
 onUnmounted(() => {
   window.removeEventListener("mouseup", handleEnd);
+  window.removeEventListener("mousemove", onWindowMouseMove);
 });
 </script>
 
@@ -243,7 +277,7 @@ onUnmounted(() => {
           :cx="dot.x"
           :cy="dot.y"
           :r="size * 0.065"
-          :fill="props.status === 'error' ? 'rgba(239, 68, 68, 0.25)' : 'rgba(99, 102, 241, 0.25)'"
+          :fill="props.status === 'error' ? 'rgba(239, 68, 68, 0.25)' : props.status === 'success' ? 'rgba(16, 185, 129, 0.25)' : 'rgba(99, 102, 241, 0.25)'"
           :stroke="strokeColor"
           stroke-width="1.5"
           class="pattern-dot-glow"

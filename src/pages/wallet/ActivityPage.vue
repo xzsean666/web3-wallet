@@ -169,7 +169,7 @@ watch([pendingActivities, allNetworks], () => {
         </div>
       </template>
 
-      <div v-if="submittedActivity.length" class="token-list">
+      <div v-if="submittedActivity.length" class="token-list scroll-container--viewport">
         <component
           :is="item.txHash ? RouterLink : 'div'"
           v-for="item in submittedActivity"

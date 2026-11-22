@@ -219,7 +219,7 @@ test.describe("Visual E2E Walkthrough & Screenshot Generation", () => {
     await clientNavigate(page, "/settings/networks");
     await expect(page).toHaveURL(/\/settings\/networks$/);
     await expect(page.getByRole("heading", { name: "网络管理" })).toBeVisible();
-    await page.locator(".rpc-candidate-section").scrollIntoViewIfNeeded();
+    await page.getByRole("button", { name: /更改 RPC/ }).first().click();
     await expect(page.getByText(/Chainlist 节点候选/)).toBeVisible();
     await page.locator(".rpc-candidate-list").waitFor({ state: "visible", timeout: 5000 }).catch(() => {});
     await snap(page, "16-networks-page.png");
@@ -268,7 +268,7 @@ test.describe("Visual E2E Walkthrough & Screenshot Generation", () => {
     await expect(page).toHaveURL(/\/unlock$/);
     await page.getByLabel("输入解锁密码").fill("incorrect-pwd");
     await page.getByRole("button", { name: "解锁钱包" }).click();
-    await expect(page.getByText(/密码/)).toBeVisible();
+    await expect(page.locator(".helper-text--error")).toBeVisible();
     await snap(page, "21-lock-unlock-page.png");
 
     // -------------------------------------------------------------------------

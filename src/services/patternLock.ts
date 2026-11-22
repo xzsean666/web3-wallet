@@ -1,3 +1,9 @@
+import {
+  decryptSecret,
+  encryptSecret,
+  type EncryptedSecretPayload,
+} from "../utils/security";
+
 /**
  * Pattern Lock Service
  * Provides gesture pattern lock (手势连线解锁) setup, verification and credential retrieval.
@@ -5,6 +11,10 @@
 
 const PATTERN_STORAGE_PREFIX = "web3_wallet_pattern_";
 const PATTERN_SALT = "web3_wallet_pattern_salt_2026_";
+
+function patternToSecret(pattern: number[]): string {
+  return `web3_wallet_pattern_secret_${pattern.join("-")}`;
+}
 
 async function hashPattern(pattern: number[]): Promise<string> {
   const encoder = new TextEncoder();
@@ -17,7 +27,7 @@ async function hashPattern(pattern: number[]): Promise<string> {
 export interface StoredPatternPayload {
   accountId: string;
   patternHash: string;
-  encryptedPassword?: string;
+  encryptedPassword?: EncryptedSecretPayload | string;
   updatedAt: number;
 }
 
@@ -33,7 +43,7 @@ export function hasPatternLock(accountId: string): boolean {
 }
 
 /**
- * Saves a new pattern lock and optional wallet password for quick unlock
+ * Saves a new pattern lock and wallet password securely encrypted via AES-GCM for quick unlock
  */
 export async function savePatternLock(
   accountId: string,
@@ -45,10 +55,16 @@ export async function savePatternLock(
   }
 
   const patternHash = await hashPattern(pattern);
+  let encryptedPassword: EncryptedSecretPayload | undefined;
+
+  if (password) {
+    encryptedPassword = await encryptSecret(password, patternToSecret(pattern));
+  }
+
   const payload: StoredPatternPayload = {
     accountId,
     patternHash,
-    encryptedPassword: password ? btoa(encodeURIComponent(password)) : undefined,
+    encryptedPassword,
     updatedAt: Date.now(),
   };
 
@@ -74,7 +90,8 @@ export async function verifyPatternLock(accountId: string, pattern: number[]): P
 }
 
 /**
- * Verifies pattern and retrieves wallet password for automatic unlocking
+ * Verifies pattern and retrieves wallet password for automatic unlocking.
+ * Supports transparent upgrade from legacy Base64 stored passwords to AES-GCM.
  */
 export async function getPatternUnlockPassword(
   accountId: string,
@@ -93,8 +110,28 @@ export async function getPatternUnlockPassword(
       return null;
     }
 
-    if (payload.encryptedPassword) {
-      return decodeURIComponent(atob(payload.encryptedPassword));
+    if (!payload.encryptedPassword) {
+      return null;
+    }
+
+    // Modern PBKDF2 + AES-GCM encrypted payload
+    if (typeof payload.encryptedPassword === "object") {
+      try {
+        return await decryptSecret(payload.encryptedPassword, patternToSecret(pattern));
+      } catch {
+        return null;
+      }
+    }
+
+    // Legacy Base64 string fallback with transparent upgrade
+    if (typeof payload.encryptedPassword === "string") {
+      try {
+        const decoded = decodeURIComponent(atob(payload.encryptedPassword));
+        void savePatternLock(accountId, pattern, decoded);
+        return decoded;
+      } catch {
+        return null;
+      }
     }
 
     return null;

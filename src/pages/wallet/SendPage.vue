@@ -1451,6 +1451,7 @@ async function signAndBroadcast() {
     });
   } finally {
     isBroadcasting.value = false;
+    walletPassword.value = "";
   }
 }
 </script>

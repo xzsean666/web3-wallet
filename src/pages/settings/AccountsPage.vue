@@ -286,7 +286,7 @@ async function submitDelete(account: AccountEntry) {
           </div>
         </template>
 
-        <div style="display: flex; flex-direction: column; gap: 14px;">
+        <div class="scroll-container--medium" style="display: flex; flex-direction: column; gap: 14px;">
           <!-- Loop through groups -->
           <div
             v-for="group in accountGroups"

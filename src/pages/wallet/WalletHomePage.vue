@@ -355,7 +355,7 @@ watch([pendingActivities, allNetworks], () => {
           </div>
         </template>
 
-        <div v-if="hasVisibleAssets" class="token-list">
+        <div v-if="hasVisibleAssets" class="token-list scroll-container--compact">
           <RouterLink v-if="showNativeAsset" class="token-row" to="/wallet/token/native">
             <div class="token-row__main">
               <span class="asset-badge asset-badge--native">{{ assetBadgeLabel(nativeAsset.symbol) }}</span>

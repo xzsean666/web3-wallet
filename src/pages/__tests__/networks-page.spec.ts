@@ -189,4 +189,49 @@ describe("NetworksPage", () => {
     const symbolInput = wrapper.find('input[placeholder="ETH"]');
     expect((symbolInput.element as HTMLInputElement).value).toBe("xDAI");
   });
+
+  it("does not display the RPC modal on initial page load, and opens it on clicking 更改 RPC", async () => {
+    const wrapper = mount(NetworksPage);
+
+    // Modal is initially closed
+    expect(wrapper.find(".rpc-modal-dialog").exists()).toBe(false);
+
+    // Click "更改 RPC (Chainlist)" on first network
+    const changeButtons = wrapper
+      .findAll("button")
+      .filter((b) => b.text().includes("更改 RPC"));
+    await changeButtons[0].trigger("click");
+    await flushPromises();
+
+    // Modal is now open
+    expect(wrapper.find(".rpc-modal-dialog").exists()).toBe(true);
+    expect(wrapper.text()).toContain("选择 Ethereum RPC 节点");
+
+    // Close button closes the modal
+    const closeBtn = wrapper.find(".modal-close-btn");
+    expect(closeBtn.exists()).toBe(true);
+    await closeBtn.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find(".rpc-modal-dialog").exists()).toBe(false);
+  });
+
+  it("filters candidate RPCs inside the modal", async () => {
+    const wrapper = mount(NetworksPage);
+
+    const changeButtons = wrapper
+      .findAll("button")
+      .filter((b) => b.text().includes("更改 RPC"));
+    await changeButtons[0].trigger("click");
+    await flushPromises();
+
+    const filterInput = wrapper.find(".rpc-filter-input");
+    expect(filterInput.exists()).toBe(true);
+
+    await filterInput.setValue("rpc1");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("https://rpc1.example.org/");
+    expect(wrapper.text()).not.toContain("https://rpc2.example.org/");
+  });
 });
