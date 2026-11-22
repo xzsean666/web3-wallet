@@ -30,6 +30,7 @@ const deletePassword = ref("");
 const deleteFeedback = ref("");
 const isDeleting = ref(false);
 const copiedAddress = ref<string | null>(null);
+const copiedWalletLabel = ref(false);
 
 type AccountEntry = (typeof walletProfiles.value)[number];
 
@@ -88,6 +89,56 @@ async function copyAddress(address: string) {
       }
     }, 2000);
   }
+}
+
+async function copyWalletLabel(label: string) {
+  let succeeded = false;
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(label);
+      succeeded = true;
+    }
+  } catch {
+    succeeded = false;
+  }
+
+  if (!succeeded) {
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = label;
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      succeeded = document.execCommand("copy");
+      document.body.removeChild(textArea);
+    } catch {
+      succeeded = false;
+    }
+  }
+
+  if (succeeded) {
+    copiedWalletLabel.value = true;
+    setTimeout(() => {
+      copiedWalletLabel.value = false;
+    }, 2000);
+  }
+}
+
+async function pasteOrFillConfirmLabel(expectedLabel: string) {
+  try {
+    if (navigator?.clipboard?.readText) {
+      const clipboardText = (await navigator.clipboard.readText()).trim();
+      if (clipboardText) {
+        deleteConfirmLabel.value = clipboardText;
+        return;
+      }
+    }
+  } catch {
+    // Clipboard permission not granted or unsupported
+  }
+  deleteConfirmLabel.value = expectedLabel;
 }
 
 async function switchAccount(accountId: string) {
@@ -150,6 +201,7 @@ function openDeleteForm(account: AccountEntry) {
   deleteConfirmLabel.value = "";
   deletePassword.value = "";
   deleteFeedback.value = "";
+  copiedWalletLabel.value = false;
 }
 
 function cancelDeleteForm() {
@@ -157,6 +209,7 @@ function cancelDeleteForm() {
   deleteConfirmLabel.value = "";
   deletePassword.value = "";
   deleteFeedback.value = "";
+  copiedWalletLabel.value = false;
 }
 
 async function submitDerive(account: AccountEntry) {
@@ -455,11 +508,38 @@ async function submitDelete(account: AccountEntry) {
                 v-if="deleteTargetAccountId === account.accountId"
                 class="account-card__form account-card__form--danger"
               >
-                <p class="helper-text helper-text--error" style="font-size: 0.74rem;">
-                  删除后账号将从当前设备移除。请输入账号名称 <strong>{{ account.walletLabel }}</strong> 确认。
-                </p>
+                <div class="account-card__delete-hint">
+                  <span>删除后账号将从当前设备移除。请输入账号名称：</span>
+                  <span class="account-card__copy-target">
+                    <strong>{{ account.walletLabel }}</strong>
+                    <button
+                      type="button"
+                      :class="['account-card__delete-copy-btn', copiedWalletLabel ? 'account-card__delete-copy-btn--success' : '']"
+                      @click="copyWalletLabel(account.walletLabel)"
+                    >
+                      <svg v-if="!copiedWalletLabel" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                      </svg>
+                      <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"></polyline>
+                      </svg>
+                      {{ copiedWalletLabel ? "已复制" : "复制" }}
+                    </button>
+                  </span>
+                  <span>确认。</span>
+                </div>
                 <label class="field">
-                  <span>确认账号名称</span>
+                  <div class="account-card__field-header">
+                    <span>确认账号名称</span>
+                    <button
+                      type="button"
+                      class="account-card__fill-btn"
+                      @click="pasteOrFillConfirmLabel(account.walletLabel)"
+                    >
+                      粘贴 / 一键填入
+                    </button>
+                  </div>
                   <input
                     v-model="deleteConfirmLabel"
                     autocomplete="off"
@@ -739,5 +819,74 @@ async function submitDelete(account: AccountEntry) {
 .account-card__form--danger {
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.25);
+}
+
+.account-card__delete-hint {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: #fca5a5;
+}
+
+.account-card__copy-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 7px;
+  border-radius: var(--radius-sm);
+  background: rgba(239, 68, 68, 0.16);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: var(--text-primary);
+  font-weight: 700;
+  user-select: text;
+}
+
+.account-card__delete-copy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(239, 68, 68, 0.35);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.account-card__delete-copy-btn:hover {
+  background: rgba(239, 68, 68, 0.55);
+}
+
+.account-card__delete-copy-btn--success {
+  background: rgba(16, 185, 129, 0.3);
+  border-color: rgba(16, 185, 129, 0.5);
+  color: #34d399;
+}
+
+.account-card__field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.account-card__fill-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.72rem;
+  color: #60a5fa;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.account-card__fill-btn:hover {
+  color: #93c5fd;
 }
 </style>

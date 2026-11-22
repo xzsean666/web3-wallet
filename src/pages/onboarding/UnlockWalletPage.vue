@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from "vue";
 import { storeToRefs } from "pinia";
 import { RouterLink, useRouter } from "vue-router";
 import PatternLock from "../../components/PatternLock.vue";
-import { hasPatternLock } from "../../services/patternLock";
+import { clearPatternLock, hasPatternLock } from "../../services/patternLock";
+import { clearBiometricUnlockCredential } from "../../services/biometrics";
 import { useSessionStore } from "../../stores/session";
 import { shortenAddress } from "../../utils/format";
 
@@ -20,6 +21,8 @@ const isSelectingAccountId = ref<string | null>(null);
 const patternStatus = ref<"normal" | "success" | "error">("normal");
 const patternRef = ref<InstanceType<typeof PatternLock> | null>(null);
 const accountHasPattern = ref(false);
+const showResetModal = ref(false);
+const isResetting = ref(false);
 
 const activeProfile = computed(
   () =>
@@ -124,6 +127,25 @@ async function onPatternCompleted(pattern: number[]) {
     }
   } finally {
     isSubmitting.value = false;
+  }
+}
+
+async function handleResetWallet() {
+  isResetting.value = true;
+  formError.value = "";
+
+  try {
+    walletProfiles.value.forEach((p) => {
+      clearPatternLock(p.accountId);
+      clearBiometricUnlockCredential(p.accountId);
+    });
+    await sessionStore.resetWallet();
+    showResetModal.value = false;
+    await router.replace("/welcome");
+  } catch (error) {
+    formError.value = error instanceof Error ? error.message : "重置钱包失败，请稍后重试。";
+  } finally {
+    isResetting.value = false;
   }
 }
 </script>
@@ -293,11 +315,12 @@ async function onPatternCompleted(pattern: number[]) {
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 14px;
+          gap: 12px;
           width: 100%;
           padding-top: 8px;
           border-top: 1px solid rgba(255, 255, 255, 0.06);
           font-size: 0.82rem;
+          flex-wrap: wrap;
         "
       >
         <RouterLink class="button button--ghost button--small" to="/settings/accounts/import">
@@ -307,6 +330,72 @@ async function onPatternCompleted(pattern: number[]) {
         <RouterLink class="button button--ghost button--small" to="/settings/accounts/create">
           创建新账号
         </RouterLink>
+        <span style="color: var(--border-subtle);">|</span>
+        <button
+          class="button button--ghost button--small"
+          style="color: var(--text-muted);"
+          type="button"
+          @click="showResetModal = true"
+        >
+          重置钱包
+        </button>
+      </div>
+
+      <!-- Reset Wallet Confirmation Modal -->
+      <div
+        v-if="showResetModal"
+        style="
+          position: fixed;
+          inset: 0;
+          background: rgba(0, 0, 0, 0.7);
+          backdrop-filter: blur(4px);
+          display: grid;
+          place-items: center;
+          padding: 20px;
+          z-index: 100;
+        "
+      >
+        <div
+          class="section-card"
+          style="
+            max-width: 360px;
+            width: 100%;
+            padding: 24px 20px;
+            background: var(--surface-card, #1e2230);
+            border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
+            border-radius: var(--radius-md, 12px);
+            text-align: left;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+          "
+        >
+          <h3 style="margin: 0; font-size: 1.1rem; font-weight: 700; color: var(--text-primary);">
+            重置本地钱包
+          </h3>
+          <p style="margin: 0; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5;">
+            重置将清除本地保存的所有钱包数据、派生地址及解锁配置。如果有助记词或私钥备份，重置后可以重新导入恢复。此操作不可逆，请确认。
+          </p>
+          <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
+            <button
+              class="button button--ghost button--small"
+              type="button"
+              :disabled="isResetting"
+              @click="showResetModal = false"
+            >
+              取消
+            </button>
+            <button
+              class="button button--primary button--small"
+              style="background: #ef4444; border-color: #ef4444;"
+              type="button"
+              :disabled="isResetting"
+              @click="handleResetWallet"
+            >
+              {{ isResetting ? "正在重置..." : "确认重置" }}
+            </button>
+          </div>
+        </div>
       </div>
     </section>
   </main>

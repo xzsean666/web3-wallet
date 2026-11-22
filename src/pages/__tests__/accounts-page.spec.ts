@@ -155,4 +155,45 @@ describe("AccountsPage", () => {
     expect(deleteWalletAccountSpy).toHaveBeenCalledWith("account-1", "super-secret");
     expect(routerPushMock).toHaveBeenCalledWith("/unlock");
   });
+
+  it("copies wallet label and pastes or fills it into delete confirmation input", async () => {
+    applyAccountSession();
+    const writeTextMock = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: {
+        writeText: writeTextMock,
+        readText: vi.fn().mockResolvedValue("Primary Wallet"),
+      },
+      configurable: true,
+    });
+
+    const wrapper = mount(AccountsPage, {
+      global: {
+        stubs: {
+          SectionCard: passthroughStub,
+          WalletChrome: passthroughStub,
+        },
+      },
+    });
+
+    await findButtonByText(wrapper, "删除账号")!.trigger("click");
+    await flushPromises();
+
+    // 点击复制钱包名字按钮
+    const copyBtn = wrapper.get(".account-card__delete-copy-btn");
+    await copyBtn.trigger("click");
+    await flushPromises();
+
+    expect(writeTextMock).toHaveBeenCalledWith("Primary Wallet");
+    expect(wrapper.text()).toContain("已复制");
+
+    // 点击 粘贴 / 一键填入 按钮
+    const fillBtn = wrapper.findAll("button").find((b) => b.text().includes("一键填入"));
+    expect(fillBtn).toBeDefined();
+    await fillBtn!.trigger("click");
+    await flushPromises();
+
+    const input = wrapper.get('input[placeholder="输入当前账号名称以确认"]');
+    expect((input.element as HTMLInputElement).value).toBe("Primary Wallet");
+  });
 });

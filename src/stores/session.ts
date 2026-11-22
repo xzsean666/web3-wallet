@@ -11,6 +11,7 @@ import {
   isTauriWalletRuntime,
   loadWalletSession,
   renameWalletAccount as renameWalletAccountBridge,
+  resetWallet as resetWalletBridge,
   setActiveWallet as setActiveWalletBridge,
   unlockWallet as unlockWalletBridge,
   updateBiometricSetting,
@@ -344,6 +345,13 @@ export const useSessionStore = defineStore("session", () => {
     };
   }
 
+  async function resetWallet() {
+    await resetWalletBridge();
+    resetSession();
+    clearWalletScopedUiState(activeAccountId.value);
+    clearAllWalletScopedUiState();
+  }
+
   function updateLastVisitedRoute(route: string) {
     if (route.startsWith("/wallet") || route.startsWith("/settings")) {
       lastVisitedRoute.value = route;
@@ -368,6 +376,7 @@ export const useSessionStore = defineStore("session", () => {
     lockWallet,
     primaryAddress,
     resetSession,
+    resetWallet,
     renameWalletAccount,
     selectWalletAccount,
     setBiometricEnabled,

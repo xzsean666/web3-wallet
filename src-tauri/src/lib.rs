@@ -56,6 +56,7 @@ pub fn run() {
             wallet::load_ui_state,
             wallet::prepare_transfer_confirmation,
             wallet::rename_wallet_account,
+            wallet::reset_wallet,
             wallet::save_ui_state,
             wallet::set_active_wallet,
             wallet::sign_transfer_transaction,

@@ -105,4 +105,27 @@ describe("UnlockWalletPage", () => {
 
     expect(wrapper.find('input[type="password"]').exists()).toBe(true);
   });
+
+  it("opens reset wallet modal and handles wallet reset", async () => {
+    const { sessionStore } = setupTestWallet();
+    const resetWalletSpy = vi.spyOn(sessionStore, "resetWallet").mockResolvedValue();
+
+    const wrapper = mount(UnlockWalletPage);
+    await flushPromises();
+
+    const resetBtn = wrapper.findAll("button").find((b) => b.text().includes("重置钱包"));
+    expect(resetBtn).toBeDefined();
+    await resetBtn!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.text()).toContain("重置将清除本地保存的所有钱包数据");
+
+    const confirmBtn = wrapper.findAll("button").find((b) => b.text().includes("确认重置"));
+    expect(confirmBtn).toBeDefined();
+    await confirmBtn!.trigger("click");
+    await flushPromises();
+
+    expect(resetWalletSpy).toHaveBeenCalled();
+    expect(routerReplaceMock).toHaveBeenCalledWith("/welcome");
+  });
 });

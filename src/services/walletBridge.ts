@@ -451,6 +451,19 @@ export async function deleteWalletAccount(request: DeleteWalletAccountRequest) {
   return createPreviewSessionSnapshot();
 }
 
+export async function resetWallet() {
+  if (isTauriWalletRuntime()) {
+    await invoke("reset_wallet");
+  } else {
+    previewState.accounts = [];
+    previewState.activeAccountId = null;
+    previewState.passwordVerifiers = {};
+    previewState.encryptedMnemonicSecrets = {};
+    previewState.preparedTransfers = {};
+    previewState.pending = null;
+  }
+}
+
 export async function prepareTransferConfirmation(request: PreparedTransferRequest) {
   if (isTauriWalletRuntime()) {
     return invoke<PreparedTransferSession>("prepare_transfer_confirmation", { request });

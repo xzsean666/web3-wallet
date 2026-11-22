@@ -81,7 +81,7 @@ struct WalletPaths {
     salt_path: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct StoredWalletMetadata {
     account_id: String,
     derivation_group_id: String,
@@ -547,11 +547,13 @@ impl WalletError {
             WalletError::StrongholdSaltMissing => {
                 "本地钱包盐文件缺失，请恢复原始 salt.txt 后再试".into()
             }
+            WalletError::MissingSigningSecret => {
+                "当前钱包缺少本地密钥记录（可能已损坏或被删除），请使用助记词重新导入或重置钱包".into()
+            }
             WalletError::Io(_)
             | WalletError::Stronghold(_)
             | WalletError::Database(_)
             | WalletError::MetadataCorrupted(_)
-            | WalletError::MissingSigningSecret
             | WalletError::InvalidStoredSecret
             | WalletError::SigningFailed(_) => "当前无法完成本地安全操作，请稍后重试".into(),
             WalletError::WalletNotInitialized => "当前还没有初始化钱包".into(),
@@ -731,6 +733,8 @@ pub fn finalize_pending_wallet(
     let final_snapshot_path = snapshot_path_for_account(&app, &pending.draft.account_id)?;
     reset_snapshot_file(&final_snapshot_path)?;
     fs::rename(&pending_snapshot_path, &final_snapshot_path)?;
+    let validated_final_snapshot =
+        validated_snapshot_path(&app, &final_snapshot_path.to_string_lossy())?;
     let finalized_metadata = StoredWalletMetadata {
         account_id: pending.draft.account_id.clone(),
         derivation_group_id: pending.draft.account_id.clone(),
@@ -743,7 +747,7 @@ pub fn finalize_pending_wallet(
         has_backed_up_mnemonic: true,
         created_at: pending.draft.created_at.clone(),
         last_unlocked_at: Some(now_rfc3339()),
-        snapshot_path: final_snapshot_path.to_string_lossy().into_owned(),
+        snapshot_path: validated_final_snapshot.to_string_lossy().into_owned(),
     };
 
     let result = save_wallet_metadata(&app, &finalized_metadata);
@@ -798,6 +802,10 @@ pub fn import_wallet(
     ensure_wallet_address_is_unique(&app, &address)?;
     let account_id = build_account_id(&address);
 
+    let final_snapshot_path = snapshot_path_for_account(&app, &account_id)?;
+    let validated_final_snapshot =
+        validated_snapshot_path(&app, &final_snapshot_path.to_string_lossy())?;
+
     persist_wallet_secret(
         &app,
         &request.password,
@@ -815,9 +823,7 @@ pub fn import_wallet(
             has_backed_up_mnemonic: false,
             created_at: now_rfc3339(),
             last_unlocked_at: Some(now_rfc3339()),
-            snapshot_path: snapshot_path_for_account(&app, &account_id)?
-                .to_string_lossy()
-                .into_owned(),
+            snapshot_path: validated_final_snapshot.to_string_lossy().into_owned(),
         },
     )
 }
@@ -916,23 +922,32 @@ pub fn delete_wallet_account(
     let _mutation_guard = state.mutation_lock.lock().unwrap();
     let metadata = load_wallet_metadata(&app, &request.account_id)?
         .ok_or(WalletError::WalletAccountNotFound)?;
-    match load_secret_record(&app, &metadata, &request.password) {
-        Ok(_) => clear_sensitive_operation_failure(&state, &sensitive_key),
-        Err(error) => {
-            if is_sensitive_password_failure(&error) {
-                record_sensitive_operation_failure(&state, &sensitive_key);
+
+    let has_snapshot_file = validated_snapshot_path(&app, &metadata.snapshot_path)
+        .map(|path| path.is_file())
+        .unwrap_or(false);
+
+    if has_snapshot_file {
+        match load_secret_record(&app, &metadata, &request.password) {
+            Ok(_) => clear_sensitive_operation_failure(&state, &sensitive_key),
+            Err(error) => {
+                if is_sensitive_password_failure(&error) {
+                    record_sensitive_operation_failure(&state, &sensitive_key);
+                }
+                return Err(error);
             }
-            return Err(error);
         }
+    } else {
+        clear_sensitive_operation_failure(&state, &sensitive_key);
     }
+
     let deleted_account_id = metadata.account_id.clone();
-    let deleted_snapshot_path = metadata.snapshot_path.clone();
     let previous_active_account_id = load_active_account_id(&app)?;
 
     delete_wallet_metadata(&app, &request.account_id)?;
 
     let remaining_accounts = load_wallet_accounts(&app)?;
-    delete_snapshot_if_unused(&app, &deleted_snapshot_path, &remaining_accounts)?;
+    delete_snapshot_if_unused(&app, &metadata, &remaining_accounts)?;
 
     let next_active_account_id = if remaining_accounts.is_empty() {
         None
@@ -953,6 +968,46 @@ pub fn delete_wallet_account(
         accounts: remaining_accounts.into_iter().map(Into::into).collect(),
         active_account_id: next_active_account_id,
     })
+}
+
+#[tauri::command]
+pub fn reset_wallet(
+    app: AppHandle,
+    state: State<'_, WalletRuntimeState>,
+) -> WalletCommandResult<()> {
+    let _mutation_guard = state.mutation_lock.lock().unwrap();
+
+    *state.pending_onboarding.lock().unwrap() = None;
+    state.pending_transfer_confirmations.lock().unwrap().clear();
+    state.sensitive_operation_attempts.lock().unwrap().clear();
+
+    let connection = metadata_connection(&app)?;
+    connection.execute_batch(
+        r#"
+        DELETE FROM wallet_accounts;
+        DELETE FROM wallet_state;
+        DELETE FROM ui_state;
+        DELETE FROM pending_onboarding;
+        "#,
+    )?;
+
+    let managed_dir = managed_snapshot_dir(&app)?;
+    if managed_dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(&managed_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("stronghold"))
+                {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -1008,6 +1063,10 @@ pub fn unlock_wallet(
     let metadata = load_wallet_metadata(&app, &request.account_id)?
         .ok_or(WalletError::WalletAccountNotFound)?;
     let snapshot_path = validated_snapshot_path(&app, &metadata.snapshot_path)?;
+
+    if !snapshot_path.is_file() {
+        return Err(WalletError::MissingSigningSecret);
+    }
 
     let stronghold = open_stronghold(
         &snapshot_path,
@@ -2671,22 +2730,53 @@ fn load_wallet_metadata_from_row(
     })
 }
 
-fn delete_snapshot_if_unused(
-    app: &AppHandle,
-    snapshot_path: &str,
+fn should_delete_snapshot_file(
+    deleted_account: &StoredWalletMetadata,
     remaining_accounts: &[StoredWalletMetadata],
-) -> Result<(), WalletError> {
+    managed_dir: &Path,
+) -> bool {
+    // 1. If any remaining account belongs to the same derivation group, they share the root mnemonic keystore.
     if remaining_accounts
         .iter()
-        .any(|entry| entry.snapshot_path == snapshot_path)
+        .any(|entry| entry.derivation_group_id == deleted_account.derivation_group_id)
     {
+        return false;
+    }
+
+    // 2. Resolve canonical path for the deleted account's snapshot
+    let target_file = match validate_snapshot_path_in_directory(
+        Path::new(&deleted_account.snapshot_path),
+        managed_dir,
+    ) {
+        Ok(path) => path,
+        Err(_) => return false,
+    };
+
+    // 3. Check if any remaining account uses the same canonical snapshot file
+    let is_still_used = remaining_accounts.iter().any(|entry| {
+        validate_snapshot_path_in_directory(Path::new(&entry.snapshot_path), managed_dir)
+            .map(|path| path == target_file)
+            .unwrap_or(false)
+    });
+
+    !is_still_used
+}
+
+fn delete_snapshot_if_unused(
+    app: &AppHandle,
+    deleted_account: &StoredWalletMetadata,
+    remaining_accounts: &[StoredWalletMetadata],
+) -> Result<(), WalletError> {
+    let managed_dir = managed_snapshot_dir(app)?;
+    if !should_delete_snapshot_file(deleted_account, remaining_accounts, &managed_dir) {
         return Ok(());
     }
 
-    let snapshot_file = validated_snapshot_path(app, snapshot_path)?;
+    let target_file =
+        validate_snapshot_path_in_directory(Path::new(&deleted_account.snapshot_path), &managed_dir)?;
 
-    if snapshot_file.is_file() {
-        fs::remove_file(snapshot_file)?;
+    if target_file.is_file() {
+        fs::remove_file(target_file)?;
     }
 
     Ok(())
@@ -2733,14 +2823,18 @@ fn build_account_id(address: &str) -> String {
 fn ensure_wallet_address_is_unique(app: &AppHandle, address: &str) -> Result<(), WalletError> {
     let normalized = address.trim().to_lowercase();
 
-    if load_wallet_accounts(app)?
-        .into_iter()
-        .any(|metadata| metadata.address.to_lowercase() == normalized)
-    {
-        Err(WalletError::DuplicateWalletAddress)
-    } else {
-        Ok(())
+    for metadata in load_wallet_accounts(app)? {
+        if metadata.address.to_lowercase() == normalized {
+            let has_valid_snapshot = validated_snapshot_path(app, &metadata.snapshot_path)
+                .map(|p| p.is_file())
+                .unwrap_or(false);
+            if has_valid_snapshot {
+                return Err(WalletError::DuplicateWalletAddress);
+            }
+        }
     }
+
+    Ok(())
 }
 
 fn next_mnemonic_derivation_index(
@@ -3077,5 +3171,122 @@ mod tests {
             serde_json::to_string(&WalletError::Stronghold("db at /tmp/secret.db".into())).unwrap();
         assert!(serialized.contains("[INTERNAL]"));
         assert!(!serialized.contains("/tmp/secret.db"));
+    }
+
+    #[test]
+    fn derived_account_deletion_preserves_shared_mnemonic_snapshot() {
+        let temp_dir = unique_temp_dir("preserve-snapshot");
+        let managed_dir = temp_dir.join("wallet-data");
+        fs::create_dir_all(&managed_dir).unwrap();
+        let canonical_managed_dir = fs::canonicalize(&managed_dir).unwrap();
+        let snapshot_path = canonical_managed_dir
+            .join("account-primary.stronghold")
+            .to_string_lossy()
+            .into_owned();
+
+        let primary_account = StoredWalletMetadata {
+            account_id: "account-primary".into(),
+            derivation_group_id: "account-primary".into(),
+            derivation_index: 0,
+            wallet_label: "Primary Wallet".into(),
+            address: "0x1111111111111111111111111111111111111111".into(),
+            source: WalletSource::Created,
+            secret_kind: SecretKind::Mnemonic,
+            is_biometric_enabled: false,
+            has_backed_up_mnemonic: true,
+            created_at: now_rfc3339(),
+            last_unlocked_at: None,
+            snapshot_path: snapshot_path.clone(),
+        };
+
+        let derived_account = StoredWalletMetadata {
+            account_id: "account-derived".into(),
+            derivation_group_id: "account-primary".into(),
+            derivation_index: 1,
+            wallet_label: "Derived Wallet".into(),
+            address: "0x2222222222222222222222222222222222222222".into(),
+            source: WalletSource::Created,
+            secret_kind: SecretKind::Mnemonic,
+            is_biometric_enabled: false,
+            has_backed_up_mnemonic: true,
+            created_at: now_rfc3339(),
+            last_unlocked_at: None,
+            snapshot_path: snapshot_path.clone(),
+        };
+
+        // When deleting the derived account, primary account still exists in the derivation group
+        assert!(
+            !should_delete_snapshot_file(
+                &derived_account,
+                &[primary_account.clone()],
+                &canonical_managed_dir
+            ),
+            "Derived account deletion must never delete the shared root mnemonic snapshot!"
+        );
+
+        // When deleting the primary account, derived account still exists in the derivation group
+        assert!(
+            !should_delete_snapshot_file(
+                &primary_account,
+                &[derived_account],
+                &canonical_managed_dir
+            ),
+            "Primary account deletion must never delete the shared root mnemonic snapshot while derived accounts exist!"
+        );
+
+        let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn unrelated_account_snapshot_is_deleted_when_unused() {
+        let temp_dir = unique_temp_dir("unrelated-snapshot");
+        let managed_dir = temp_dir.join("wallet-data");
+        fs::create_dir_all(&managed_dir).unwrap();
+        let canonical_managed_dir = fs::canonicalize(&managed_dir).unwrap();
+
+        let account_1 = StoredWalletMetadata {
+            account_id: "account-1".into(),
+            derivation_group_id: "account-1".into(),
+            derivation_index: 0,
+            wallet_label: "Wallet 1".into(),
+            address: "0x1111111111111111111111111111111111111111".into(),
+            source: WalletSource::Created,
+            secret_kind: SecretKind::Mnemonic,
+            is_biometric_enabled: false,
+            has_backed_up_mnemonic: true,
+            created_at: now_rfc3339(),
+            last_unlocked_at: None,
+            snapshot_path: canonical_managed_dir
+                .join("account-1.stronghold")
+                .to_string_lossy()
+                .into_owned(),
+        };
+
+        let account_2 = StoredWalletMetadata {
+            account_id: "account-2".into(),
+            derivation_group_id: "account-2".into(),
+            derivation_index: 0,
+            wallet_label: "Wallet 2".into(),
+            address: "0x2222222222222222222222222222222222222222".into(),
+            source: WalletSource::Imported,
+            secret_kind: SecretKind::PrivateKey,
+            is_biometric_enabled: false,
+            has_backed_up_mnemonic: false,
+            created_at: now_rfc3339(),
+            last_unlocked_at: None,
+            snapshot_path: canonical_managed_dir
+                .join("account-2.stronghold")
+                .to_string_lossy()
+                .into_owned(),
+        };
+
+        // Deleting account_2 has no relation to account_1, should delete
+        assert!(should_delete_snapshot_file(
+            &account_2,
+            &[account_1],
+            &canonical_managed_dir
+        ));
+
+        let _ = fs::remove_dir_all(temp_dir);
     }
 }
