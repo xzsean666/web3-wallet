@@ -3,44 +3,39 @@
 ## 当前任务
 
 - 状态：`completed`
-- 任务：全面走查所有 UI 与业务逻辑（简约、易用深度重构），执行缺陷排查、全量测试验证，准备 Git Commit、Push 并触发 GitHub Actions CI/CD Android APK 构建
+- 任务：修复设置页手势密码 UI/交互逻辑与安全锁屏布局问题、解决 Chainlist/自定义 RPC 未持久化 Bug、适配 Android 沉浸式系统栏、全面走查全应用人类使用体验与边缘逻辑并补充回归测试
 - 负责人：AI Agent
 
 ## 时间
 
-- 开始时间：2026-11-07 12:24:00 CST
-- 最后更新时间：2026-11-07 13:18:00 CST
+- 更新时间：2026-11-28 14:06 CST
 
-## 全面走查与优化重点清单
+## 修复与全面走查重点清单
 
-1. **钱包主页与导航降噪 (`WalletHomePage.vue` & `WalletChrome.vue`)**：
-   - 彻底消除主页顶部与 `WalletChrome` 紧挨着的重复账号头像/名字/地址双层显示。
-   - 聚焦核心资产余额与网络状态，精炼测试网标签与同步状态，在主卡片增加地址一键复制交互反馈。
-2. **转账发送页极致精炼 (`SendPage.vue`)**：
-   - 移除常驻在表单核心区域占满 3 行的“扫码内容”文本框及“解析扫码内容”按钮，降低视觉噪音。
-   - 保留扫码相机、剪贴板粘贴与智能识别，地址输入框直接支持 EIP-681 URI 粘贴或输入时自动解析，恢复清爽高效的转账输入体验。
-3. **网络管理中心体系化精简 (`NetworksPage.vue`)**：
-   - 彻底移除顶部堆叠的 4 张英文/技术指标卡片（`Active`、`Total Networks`、`Validation: Not Checked`、`RPC`），释放半屏空间。
-   - 全面中文化：`Mainnet Networks` -> `正式网络`，`Testnet Networks` -> `测试网络`，`Validation` 状态标签中文化。
-4. **交易详情页高端极简重构 (`TransactionDetailPage.vue`)**：
-   - 消除散乱且数据重复的 6 张中英文调试卡片（`Hash`、`Status`、`Timeline`、`Decoded Action`、`Raw Transaction`、`Fees`）。
-   - 重构为现代 Web3 钱包（如 Phantom/Rainbow）标准的交易详情卡：顶部核心金额与状态、核心信息列表、技术细节折叠面板、底部区块浏览器跳转与返回。
-5. **常用地址簿页面重构 (`AddressBookPage.vue`)**：
-   - 彻底移除顶部 4 张冗余英文指标卡片（`Current Network`、`Network Contacts`、`All Contacts`、`Latest Update`）。
-   - 页面标题与分类全面中文化，联系人列表与操作更简洁高效。
-6. **添加代币与资产详情体验优化 (`AddTokenPage.vue` & `TokenDetailPage.vue`)**：
-   - `AddTokenPage.vue`：输入合法合约地址时自动触发元数据读取（带防抖），免去必须手动点击按钮的繁琐，同时保持按钮兼容。
-   - 中文化 Eyebrow 标签，优化视觉层级。
-7. **验证结果**：
-   - Rust 底层测试：12/12 全部通过（100%）。
-   - TypeScript 生产构建：`pnpm build`（vue-tsc 严格类型检查 + Vite 打包）0 报错通过。
-   - 单元测试：26 个文件、151 个测试全部通过（100%）。
-   - Playwright 端到端测试：10 个用例全部通过（100%）。
-   - 全量更新 `docs/screenshots/` 下 22 张高清实际运行截图。
+1. **设置页与安全锁屏重构 (`SettingsPage.vue` & `main.css`)**：
+   - 固定状态胶囊（`未设置`/`已设置`）与操作按钮（`设置手势`/`修改手势`、`清除`/`确认清除`、`取消`）为 `white-space: nowrap; flex-shrink: 0;`，彻底杜绝窄屏下文字竖排折行。
+   - 将`锁定钱包`按钮完全移出`安全与锁屏`卡片，独立放置在页面底部安全操作区；优化设置页顶部钱包身份卡换行布局，避免名称在移动端被极端截断。
+   - 重构手势密码设置流程为明确四步：`1. 验证当前钱包密码（通过 unlockWallet 校验）` -> `2. 绘制新手势（隐藏于验证前）` -> `3. 二次绘制确认` -> `4. 点击“确认保存手势”显式确认生效`；并支持两步二次确认清除手势；默认版本号读取 `package.json`。
+2. **Chainlist / 预设网络 RPC 与 UI 状态持久化修复 (`src-tauri/src/wallet.rs`, `src/stores/networks.ts`, `src/services/chainlist.ts`)**：
+   - 修复 Rust 后端 `PersistedUiState` 缺失 `networkRpcOverrides`、`UiNetworkConfig` 缺失 `environment`、`WalletScopedUiState` 缺失 `sendDraft` 导致的致命持久化丢失 Bug：此前 Tauri 端 `save_ui_state` 会静默丢弃预设网络的 Chainlist RPC 覆盖并在下次启动覆盖或丢失配置。
+   - 在 `src/stores/networks.ts` 中统一标准化默认 RPC 与覆盖 URL（忽略末尾 `/` 差异）并启用 `{ flush: "sync" }` 同步落盘；在 `src/services/chainlist.ts` 中为超过 1.5MB 的全量 Chainlist 目录增加压缩降级缓存策略，适配 Android WebView `localStorage` 容量限制。
+3. **Android 系统栏与全页体验走查修复**：
+   - `scripts/sync-android-system-bars.sh`：更新系统栏底色为暗色 `#FF090A0F`（深色底白字），并为 Android 15 Edge-to-Edge 注入 `WindowInsetsCompat`（状态栏/刘海/导航栏/键盘）安全内边距。
+   - `NetworksPage.vue`：移除页面挂载即发起的冗余全量请求；弹窗内先展示预置与已缓存节点并在后台提示同步状态，去重末尾 `/` 重复候选，重构卡片换行与固定弹窗底部提交栏，修正推荐一键添加网络为真实非预设链。
+   - `AddressBookPage.vue`、`WalletHomePage.vue`、`WalletChrome.vue`、`ReceivePage.vue`、`TransactionDetailPage.vue`：修复联系人操作按钮被挤出屏幕、大额余额溢出、英文 `Unavailable`/`success` 残留、`key-value-row` 键名换行及缺失样式类等问题。
+   - `SendPage.vue`、`AddTokenPage.vue`、`BackupPhrasePage.vue`、`UnlockWalletPage.vue`、`session.ts`：切换账号时隔离转账草稿、未设手势时隐藏手势解锁 Tab、失败广播重置手势盘、改换合约地址重置旧代币元数据、移除无意义循环返回链接、删除/重置账号同步清理手势与生物识别本地凭据，全部密码校验取消 `.trim()` 以保持与 Rust Argon2 原文一致。
+4. **验证结果**：
+   - `bash -n scripts/sync-android-system-bars.sh`：通过。
+   - `pnpm test:rust`：15 个测试全部通过（含新增 `persisted_ui_state_preserves_rpc_overrides_environment_and_send_draft` 序列化回归测试）。
+   - `pnpm test:unit`：30 个测试文件、170 个测试全部通过（含新增 `settings-page.spec.ts` 与 `persistence-fixes.spec.ts`）。
+   - `pnpm build`（`vue-tsc --noEmit && vite build`）：0 错误通过。
+   - `pnpm test:e2e`（Playwright）：10 个端到端用例全部通过，并同步刷新 `docs/screenshots/` 下 22 张端到端截图。
 
 ---
 
 ## 历史任务记录
+
+- 任务：全面走查所有 UI 与业务逻辑（简约、易用深度重构），执行缺陷排查、全量测试验证，准备 Git Commit、Push 并触发 GitHub Actions CI/CD Android APK 构建（已完成：Rust 12/12、unit 26 files/151 tests、e2e 10/10）
 - 任务：根据用户反馈对欢迎页、备份页、钱包主页、账号管理页进行 UI 排版深度优化，并实现生物识别完整解锁及 3x3 手势连线多方式解锁（已完成）
 
 

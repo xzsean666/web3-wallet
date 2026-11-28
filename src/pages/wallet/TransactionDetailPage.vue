@@ -34,7 +34,9 @@ const trackedTokens = computed(() => walletStore.tokensForNetwork(selectedNetwor
 const activityRecord = computed(
   () =>
     recentActivity.value.find(
-      (item) => item.txHash === txHash.value && isActivityForCurrentAccount(item),
+      (item) =>
+        item.txHash?.toLowerCase() === txHash.value.toLowerCase() &&
+        isActivityForCurrentAccount(item),
     ) ?? null,
 );
 const details = ref<TransactionDetails | null>(null);
@@ -59,12 +61,12 @@ async function copyTxHash() {
 function statusBadgeInfo() {
   const status = details.value?.status ?? activityRecord.value?.status ?? "pending";
   if (status === "success" || status === "complete") {
-    return { label: "交易已确认", chipClass: "status-chip--accent" };
+    return { label: "交易已确认", shortLabel: "成功", chipClass: "status-chip--accent" };
   }
   if (status === "reverted") {
-    return { label: "交易已失败", chipClass: "status-chip--danger" };
+    return { label: "交易已失败", shortLabel: "失败", chipClass: "status-chip--danger" };
   }
-  return { label: "链上打包中", chipClass: "status-chip--warning" };
+  return { label: "链上打包中", shortLabel: "打包中", chipClass: "status-chip--warning" };
 }
 
 function isActivityForCurrentAccount(item: {
@@ -260,11 +262,11 @@ onBeforeUnmount(stopPolling);
         <div class="key-value-list">
           <div class="key-value-row">
             <span>交易状态</span>
-            <strong style="display: inline-flex; align-items: center; gap: 6px;">
+            <strong style="display: inline-flex; align-items: center; gap: 6px; justify-content: flex-end;">
               <span :class="['status-chip', statusBadgeInfo().chipClass]" style="padding: 1px 6px; font-size: 0.68rem;">
-                {{ details?.status ?? activityRecord?.status ?? "pending" }}
+                {{ statusBadgeInfo().shortLabel }}
               </span>
-              <span>Block {{ details?.blockNumber ?? "打包中" }}</span>
+              <span>{{ details?.blockNumber ? `区块 ${details.blockNumber}` : "打包中" }}</span>
             </strong>
           </div>
           <div class="key-value-row">

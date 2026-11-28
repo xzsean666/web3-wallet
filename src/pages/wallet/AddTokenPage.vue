@@ -42,6 +42,9 @@ watch([contractAddress, activeNetwork], ([newAddress]) => {
   metadataLookupRequestId += 1;
   validatedMetadataKey.value = "";
   verifiedMetadata.value = null;
+  name.value = "";
+  symbol.value = "";
+  decimals.value = "18";
   metadataLookupError.value = "";
   metadataLookupMessage.value = "";
 
@@ -171,6 +174,11 @@ async function addToken() {
     :show-hero="true"
     :show-nav="false"
   >
+    <template #actions>
+      <RouterLink class="button button--ghost button--small" to="/wallet">
+        返回钱包
+      </RouterLink>
+    </template>
     <section class="page-grid page-grid--1">
       <SectionCard title="代币信息">
         <form class="form-grid" @submit.prevent="addToken">
@@ -225,7 +233,13 @@ async function addToken() {
           </ul>
 
           <div class="form-actions" style="margin-top: 8px;">
-            <button class="button button--primary" type="submit" :disabled="!name || !symbol">添加代币</button>
+            <button
+              class="button button--primary"
+              type="submit"
+              :disabled="isReadingMetadata || !name || !symbol"
+            >
+              {{ isReadingMetadata ? "读取元数据中..." : "添加代币" }}
+            </button>
             <RouterLink class="button button--ghost" to="/wallet">取消</RouterLink>
           </div>
         </form>

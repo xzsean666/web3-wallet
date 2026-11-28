@@ -472,9 +472,11 @@ export const useNetworksStore = defineStore("networks", () => {
         };
       }
 
+      const defaultNormalizedUrl =
+        normalizeAllowedRpcUrl(presetNetwork.rpcUrl)?.toString() ?? presetNetwork.rpcUrl;
       const nextOverrides = { ...networkRpcOverrides.value };
 
-      if (normalizedRpcUrl === presetNetwork.rpcUrl) {
+      if (normalizedRpcUrl === defaultNormalizedUrl || normalizedRpcUrl === presetNetwork.rpcUrl) {
         delete nextOverrides[id];
       } else {
         nextOverrides[id] = normalizedRpcUrl;
@@ -534,6 +536,7 @@ export const useNetworksStore = defineStore("networks", () => {
     },
     {
       deep: true,
+      flush: "sync",
     },
   );
 
@@ -547,14 +550,21 @@ export const useNetworksStore = defineStore("networks", () => {
     },
     {
       deep: true,
+      flush: "sync",
     },
   );
 
-  watch(activeNetworkId, (nextActiveNetworkId) => {
-    patchPersistedUiState({
-      activeNetworkId: nextActiveNetworkId,
-    });
-  });
+  watch(
+    activeNetworkId,
+    (nextActiveNetworkId) => {
+      patchPersistedUiState({
+        activeNetworkId: nextActiveNetworkId,
+      });
+    },
+    {
+      flush: "sync",
+    },
+  );
 
   return {
     activeNetwork,

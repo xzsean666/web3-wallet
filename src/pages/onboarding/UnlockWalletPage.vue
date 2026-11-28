@@ -22,6 +22,7 @@ const patternStatus = ref<"normal" | "success" | "error">("normal");
 const patternRef = ref<InstanceType<typeof PatternLock> | null>(null);
 const accountHasPattern = ref(false);
 const showResetModal = ref(false);
+const resetModalError = ref("");
 const isResetting = ref(false);
 
 const activeProfile = computed(
@@ -132,7 +133,7 @@ async function onPatternCompleted(pattern: number[]) {
 
 async function handleResetWallet() {
   isResetting.value = true;
-  formError.value = "";
+  resetModalError.value = "";
 
   try {
     walletProfiles.value.forEach((p) => {
@@ -143,7 +144,7 @@ async function handleResetWallet() {
     showResetModal.value = false;
     await router.replace("/welcome");
   } catch (error) {
-    formError.value = error instanceof Error ? error.message : "重置钱包失败，请稍后重试。";
+    resetModalError.value = error instanceof Error ? error.message : "重置钱包失败，请稍后重试。";
   } finally {
     isResetting.value = false;
   }
@@ -199,8 +200,9 @@ async function handleResetWallet() {
         </div>
       </div>
 
-      <!-- Unlock Mode Switcher Tabs -->
+      <!-- Unlock Mode Switcher Tabs (only shown when pattern lock is configured) -->
       <div
+        v-if="accountHasPattern"
         style="
           display: flex;
           background: rgba(255, 255, 255, 0.05);
@@ -214,7 +216,7 @@ async function handleResetWallet() {
           :class="['button', unlockMode === 'pattern' ? 'button--secondary' : 'button--ghost']"
           type="button"
           style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
-          @click="unlockMode = 'pattern'"
+          @click="unlockMode = 'pattern'; formError = '';"
         >
           手势解锁
         </button>
@@ -222,7 +224,7 @@ async function handleResetWallet() {
           :class="['button', unlockMode === 'password' ? 'button--secondary' : 'button--ghost']"
           type="button"
           style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
-          @click="unlockMode = 'password'"
+          @click="unlockMode = 'password'; formError = '';"
         >
           密码解锁
         </button>
@@ -252,13 +254,17 @@ async function handleResetWallet() {
 
         <div class="form-actions" style="margin-top: 4px;">
           <button
-            :disabled="isSubmitting || !password.trim()"
+            :disabled="isSubmitting || !password"
             class="button button--primary"
             type="submit"
           >
             {{ isSubmitting ? "正在解锁..." : "解锁钱包" }}
           </button>
         </div>
+
+        <p v-if="!accountHasPattern" class="helper-text" style="font-size: 0.72rem; text-align: center;">
+          解锁后可在【设置 → 安全与锁屏】中开启手势连线快速解锁
+        </p>
       </form>
 
       <!-- Mode 2: Gesture Pattern Lock -->
@@ -315,9 +321,9 @@ async function handleResetWallet() {
           display: flex;
           align-items: center;
           justify-content: center;
-          gap: 12px;
+          gap: 8px;
           width: 100%;
-          padding-top: 8px;
+          padding-top: 10px;
           border-top: 1px solid rgba(255, 255, 255, 0.06);
           font-size: 0.82rem;
           flex-wrap: wrap;
@@ -326,16 +332,14 @@ async function handleResetWallet() {
         <RouterLink class="button button--ghost button--small" to="/settings/accounts/import">
           导入其他账号
         </RouterLink>
-        <span style="color: var(--border-subtle);">|</span>
         <RouterLink class="button button--ghost button--small" to="/settings/accounts/create">
           创建新账号
         </RouterLink>
-        <span style="color: var(--border-subtle);">|</span>
         <button
           class="button button--ghost button--small"
           style="color: var(--text-muted);"
           type="button"
-          @click="showResetModal = true"
+          @click="showResetModal = true; resetModalError = '';"
         >
           重置钱包
         </button>
@@ -347,13 +351,14 @@ async function handleResetWallet() {
         style="
           position: fixed;
           inset: 0;
-          background: rgba(0, 0, 0, 0.7);
+          background: rgba(0, 0, 0, 0.72);
           backdrop-filter: blur(4px);
           display: grid;
           place-items: center;
           padding: 20px;
           z-index: 100;
         "
+        @click.self="!isResetting && (showResetModal = false)"
       >
         <div
           class="section-card"
@@ -361,7 +366,7 @@ async function handleResetWallet() {
             max-width: 360px;
             width: 100%;
             padding: 24px 20px;
-            background: var(--surface-card, #1e2230);
+            background: var(--bg-surface, #12131b);
             border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.1));
             border-radius: var(--radius-md, 12px);
             text-align: left;
@@ -375,6 +380,9 @@ async function handleResetWallet() {
           </h3>
           <p style="margin: 0; font-size: 0.84rem; color: var(--text-secondary); line-height: 1.5;">
             重置将清除本地保存的所有钱包数据、派生地址及解锁配置。如果有助记词或私钥备份，重置后可以重新导入恢复。此操作不可逆，请确认。
+          </p>
+          <p v-if="resetModalError" class="helper-text helper-text--error" style="margin: 0;">
+            {{ resetModalError }}
           </p>
           <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px;">
             <button

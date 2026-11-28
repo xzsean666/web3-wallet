@@ -53,18 +53,75 @@ function syncMainActivity(filePath) {
   updateFile(filePath, (source) => {
     let next = source.replace(/\nimport androidx\.activity\.enableEdgeToEdge\s*/u, "\n");
     next = next.replace(/^\s*enableEdgeToEdge\(\)\s*\n/mu, "");
+
+    const requiredImports = [
+      "import android.os.Bundle",
+      "import android.view.View",
+      "import androidx.core.view.ViewCompat",
+      "import androidx.core.view.WindowCompat",
+      "import androidx.core.view.WindowInsetsCompat",
+    ];
+    for (const imp of requiredImports) {
+      if (!next.includes(imp)) {
+        next = next.replace(/^(package\s+[^\r\n]+\r?\n)/u, `$1${imp}\n`);
+      }
+    }
+
+    const insetHelperMarker = "// web3-wallet-system-bar-insets";
+    if (!next.includes(insetHelperMarker)) {
+      const insetCode = `    ${insetHelperMarker}
+    WindowCompat.getInsetsController(window, window.decorView).apply {
+      isAppearanceLightStatusBars = false
+      isAppearanceLightNavigationBars = false
+    }
+    findViewById<View>(android.R.id.content)?.let { rootView ->
+      ViewCompat.setOnApplyWindowInsetsListener(rootView) { view, windowInsets ->
+        val systemBars = windowInsets.getInsets(
+          WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout(),
+        )
+        val ime = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+        val bottomInset = if (ime.bottom > systemBars.bottom) ime.bottom else systemBars.bottom
+        view.setPadding(
+          systemBars.left,
+          systemBars.top,
+          systemBars.right,
+          bottomInset,
+        )
+        windowInsets
+      }
+      ViewCompat.requestApplyInsets(rootView)
+    }`;
+
+      if (/super\.onCreate\([^\n]*\)/.test(next)) {
+        next = next.replace(
+          /(super\.onCreate\([^\n]*\)\n)/u,
+          `$1${insetCode}\n`,
+        );
+      } else if (/class MainActivity\s*:\s*TauriActivity\(\)\s*\{/u.test(next)) {
+        next = next.replace(
+          /(class MainActivity\s*:\s*TauriActivity\(\)\s*\{)/u,
+          `$1\n  override fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n${insetCode}\n  }`,
+        );
+      } else {
+        next = next.replace(
+          /(class MainActivity\s*:\s*TauriActivity\(\))/u,
+          `$1 {\n  override fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n${insetCode}\n  }\n}`,
+        );
+      }
+    }
+
     return next;
   });
 }
 
 function syncColors(filePath) {
   updateFile(filePath, (source) => {
-    const colorLine = '    <color name="wallet_system_bar">#FFF5EFE6</color>';
+    const colorLine = '    <color name="wallet_system_bar">#FF090A0F</color>';
 
     if (source.includes('name="wallet_system_bar"')) {
       return source.replace(
         /<color name="wallet_system_bar">.*?<\/color>/u,
-        "<color name=\"wallet_system_bar\">#FFF5EFE6</color>",
+        "<color name=\"wallet_system_bar\">#FF090A0F</color>",
       );
     }
 
@@ -74,7 +131,7 @@ function syncColors(filePath) {
 
 function syncTheme(filePath) {
   updateFile(filePath, (source) => {
-    const replacement = `    <style name="Theme.web3_wallet" parent="Theme.MaterialComponents.DayNight.NoActionBar">\n        <item name="android:windowBackground">@color/wallet_system_bar</item>\n        <item name="android:statusBarColor">@color/wallet_system_bar</item>\n        <item name="android:navigationBarColor">@color/wallet_system_bar</item>\n        <item name="android:windowLightStatusBar">true</item>\n        <item name="android:windowLightNavigationBar">true</item>\n    </style>`;
+    const replacement = `    <style name="Theme.web3_wallet" parent="Theme.MaterialComponents.DayNight.NoActionBar">\n        <item name="android:windowBackground">@color/wallet_system_bar</item>\n        <item name="android:statusBarColor">@color/wallet_system_bar</item>\n        <item name="android:navigationBarColor">@color/wallet_system_bar</item>\n        <item name="android:windowLightStatusBar">false</item>\n        <item name="android:windowLightNavigationBar">false</item>\n    </style>`;
 
     return source.replace(
       /    <style name="Theme\.web3_wallet" parent="Theme\.MaterialComponents\.DayNight\.NoActionBar">[\s\S]*?    <\/style>/u,

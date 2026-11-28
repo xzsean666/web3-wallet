@@ -60,9 +60,12 @@ const accountMonogram = computed(() => {
             :class="['meta-pill', activeNetwork.environment === 'testnet' ? 'meta-pill--testnet' : '']"
             to="/settings/networks"
             :aria-label="`网络：${activeNetwork.name}`"
+            style="max-width: 170px;"
           >
-            {{ activeNetwork.name }}
-            <span v-if="activeNetwork.environment === 'testnet'" style="margin-left: 4px; opacity: 0.85; font-size: 0.72rem;">测试网</span>
+            <span style="overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
+              {{ activeNetwork.name }}
+            </span>
+            <span v-if="activeNetwork.environment === 'testnet'" style="flex-shrink: 0; opacity: 0.85; font-size: 0.72rem;">测试网</span>
           </RouterLink>
         </div>
       </div>

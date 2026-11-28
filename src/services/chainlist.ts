@@ -250,21 +250,62 @@ export function readPersistedChainlistCache(): ChainlistNetworkData[] | null {
   return null;
 }
 
+function compactChainlistNetworksForStorage(
+  networks: ChainlistNetworkData[],
+  maxNetworks: number,
+  maxRpcsPerNetwork: number,
+): ChainlistNetworkData[] {
+  const priorityIds = new Set(Object.keys(PRESET_RPC_FALLBACKS).map((id) => Number(id)));
+  const withRpcs = networks.filter((net) => net.rpc.length > 0);
+  const prioritized = [
+    ...withRpcs.filter((net) => priorityIds.has(net.chainId)),
+    ...withRpcs.filter((net) => !priorityIds.has(net.chainId)),
+  ].slice(0, maxNetworks);
+
+  return prioritized.map((net) => ({
+    chainId: net.chainId,
+    name: net.name,
+    chain: net.chain,
+    rpc: net.rpc.slice(0, maxRpcsPerNetwork),
+    nativeCurrency: net.nativeCurrency,
+    explorers: net.explorers?.slice(0, 1),
+    isTestnet: net.isTestnet || undefined,
+  }));
+}
+
 export function writePersistedChainlistCache(networks: ChainlistNetworkData[]): void {
   if (typeof window === "undefined" || !window.localStorage) {
     return;
   }
 
-  try {
-    window.localStorage.setItem(
-      CHAINLIST_CACHE_KEY,
-      JSON.stringify({
-        timestamp: Date.now(),
-        networks,
-      }),
-    );
-  } catch {
-    // Ignore storage write errors (e.g. quota exceeded)
+  const timestamp = Date.now();
+  const fullPayload = JSON.stringify({
+    timestamp,
+    networks,
+  });
+
+  // Mobile WebView localStorage typically caps around ~5MB; compact large payloads first.
+  const candidates =
+    fullPayload.length <= 1_500_000
+      ? [fullPayload]
+      : [
+          JSON.stringify({
+            timestamp,
+            networks: compactChainlistNetworksForStorage(networks, 800, 10),
+          }),
+          JSON.stringify({
+            timestamp,
+            networks: compactChainlistNetworksForStorage(networks, 300, 6),
+          }),
+        ];
+
+  for (const payload of candidates) {
+    try {
+      window.localStorage.setItem(CHAINLIST_CACHE_KEY, payload);
+      return;
+    } catch {
+      // Retry with smaller compacted subset when quota is exceeded.
+    }
   }
 }
 

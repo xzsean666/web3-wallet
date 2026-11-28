@@ -1,5 +1,7 @@
 import { computed, ref } from "vue";
 import { defineStore } from "pinia";
+import { clearBiometricUnlockCredential } from "../services/biometrics";
+import { clearPatternLock } from "../services/patternLock";
 import {
   clearAllWalletScopedUiState,
   clearWalletScopedUiState,
@@ -317,6 +319,13 @@ export const useSessionStore = defineStore("session", () => {
     }
 
     if (!snapshot || snapshot.accounts.length === 0) {
+      const removedIds = walletProfiles.value.map((profile) => profile.accountId);
+      removedIds.forEach((id) => {
+        clearPatternLock(id);
+        clearBiometricUnlockCredential(id);
+      });
+      clearPatternLock(accountId);
+      clearBiometricUnlockCredential(accountId);
       resetSession();
       clearWalletScopedUiState(accountId);
       clearAllWalletScopedUiState();
@@ -328,6 +337,8 @@ export const useSessionStore = defineStore("session", () => {
       };
     }
 
+    clearPatternLock(accountId);
+    clearBiometricUnlockCredential(accountId);
     clearWalletScopedUiState(accountId);
     applyWalletSession(snapshot, {
       unlocked: deletedActive ? false : isUnlocked.value,
@@ -346,9 +357,19 @@ export const useSessionStore = defineStore("session", () => {
   }
 
   async function resetWallet() {
+    const accountIds = walletProfiles.value.map((profile) => profile.accountId);
+    const currentActiveId = activeAccountId.value;
     await resetWalletBridge();
+    accountIds.forEach((id) => {
+      clearPatternLock(id);
+      clearBiometricUnlockCredential(id);
+    });
+    if (currentActiveId) {
+      clearPatternLock(currentActiveId);
+      clearBiometricUnlockCredential(currentActiveId);
+    }
     resetSession();
-    clearWalletScopedUiState(activeAccountId.value);
+    clearWalletScopedUiState(currentActiveId);
     clearAllWalletScopedUiState();
   }
 

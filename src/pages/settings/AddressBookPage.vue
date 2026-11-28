@@ -20,6 +20,8 @@ const contactAddress = ref("");
 const contactNote = ref("");
 const formErrors = ref<string[]>([]);
 const feedback = ref<null | { tone: "success" | "error"; message: string }>(null);
+const contactFormRef = ref<HTMLElement | null>(null);
+const copiedContactId = ref<string | null>(null);
 
 const contacts = computed(() => walletStore.contactsForNetwork(activeNetwork.value.id));
 const activeNetworkContactCount = computed(() => contacts.value.length);
@@ -41,6 +43,21 @@ function editContact(entry: AddressBookEntry) {
   contactNote.value = entry.note;
   formErrors.value = [];
   feedback.value = null;
+  contactFormRef.value?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function copyContactAddress(entry: AddressBookEntry) {
+  try {
+    await navigator.clipboard.writeText(entry.address);
+    copiedContactId.value = entry.id;
+    window.setTimeout(() => {
+      if (copiedContactId.value === entry.id) {
+        copiedContactId.value = null;
+      }
+    }, 2000);
+  } catch {
+    // Ignore clipboard failure
+  }
 }
 
 function saveContact() {
@@ -112,36 +129,48 @@ function deleteContact(entry: AddressBookEntry) {
     <!-- Saved Contacts List (Top Priority) -->
     <section class="page-grid page-grid--1">
       <SectionCard title="已保存联系人" :description="`${activeNetwork.name} 网络下的联系人列表`">
-        <div v-if="contacts.length" class="token-list scroll-container--compact">
-          <article v-for="entry in contacts" :key="entry.id" class="token-row">
-            <div class="token-row__content">
-              <div style="display: flex; align-items: center; gap: 8px;">
-                <div style="width: 28px; height: 28px; border-radius: var(--radius-full); background: linear-gradient(135deg, #6366f1, #06b6d4); display: grid; place-items: center; color: #fff; font-size: 0.75rem; font-weight: 700;">
+        <div v-if="contacts.length" class="address-contact-list scroll-container--compact">
+          <article v-for="entry in contacts" :key="entry.id" class="address-contact-card">
+            <div class="address-contact-card__top">
+              <div class="address-contact-card__identity">
+                <div class="address-contact-card__avatar">
                   {{ entry.label.slice(0, 1).toUpperCase() }}
                 </div>
-                <strong>{{ entry.label }}</strong>
+                <div class="address-contact-card__info">
+                  <strong>{{ entry.label }}</strong>
+                  <div class="address-contact-card__addr-row">
+                    <span>{{ shortenAddress(entry.address) }}</span>
+                    <button
+                      class="address-contact-card__copy"
+                      type="button"
+                      @click="copyContactAddress(entry)"
+                    >
+                      {{ copiedContactId === entry.id ? "已复制" : "复制" }}
+                    </button>
+                  </div>
+                </div>
               </div>
-              <p class="token-row__address" style="margin-top: 4px;">{{ shortenAddress(entry.address) }} · {{ entry.address }}</p>
-              <p v-if="entry.note" class="helper-text" style="margin: 2px 0 0;">{{ entry.note }}</p>
-            </div>
-            <div class="token-row__meta">
-              <strong class="token-row__timestamp">
+              <span class="address-contact-card__usage">
                 {{ entry.lastUsedAt ? `${formatRelativeTime(entry.lastUsedAt)} 使用` : "未使用" }}
-              </strong>
-              <div class="inline-actions" style="margin-top: 4px;">
-                <RouterLink
-                  class="button button--secondary button--small"
-                  :to="{ name: 'wallet-send', query: { recipient: entry.address } }"
-                >
-                  发送
-                </RouterLink>
-                <button class="button button--ghost button--small" type="button" @click="editContact(entry)">
-                  编辑
-                </button>
-                <button class="button button--danger button--small" type="button" @click="deleteContact(entry)">
-                  删除
-                </button>
-              </div>
+              </span>
+            </div>
+
+            <p class="address-contact-card__full-addr">{{ entry.address }}</p>
+            <p v-if="entry.note" class="helper-text address-contact-card__note">{{ entry.note }}</p>
+
+            <div class="address-contact-card__actions">
+              <RouterLink
+                class="button button--secondary button--small"
+                :to="{ name: 'wallet-send', query: { recipient: entry.address } }"
+              >
+                发送
+              </RouterLink>
+              <button class="button button--ghost button--small" type="button" @click="editContact(entry)">
+                编辑
+              </button>
+              <button class="button button--danger button--small" type="button" @click="deleteContact(entry)">
+                删除
+              </button>
             </div>
           </article>
         </div>
@@ -152,7 +181,7 @@ function deleteContact(entry: AddressBookEntry) {
     </section>
 
     <!-- Add / Edit Contact Form -->
-    <section class="page-grid page-grid--1">
+    <section ref="contactFormRef" class="page-grid page-grid--1">
       <SectionCard :title="currentDraftMatch ? '编辑联系人' : '添加联系人'" description="设置收款地址别名与备注">
         <form class="form-grid" @submit.prevent="saveContact">
           <div class="form-grid-row-2">
@@ -223,3 +252,116 @@ function deleteContact(entry: AddressBookEntry) {
     </details>
   </WalletChrome>
 </template>
+
+<style scoped>
+.address-contact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.address-contact-card {
+  padding: 12px 14px;
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.address-contact-card__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.address-contact-card__identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+}
+
+.address-contact-card__avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, #6366f1, #06b6d4);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-size: 0.82rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.address-contact-card__info {
+  min-width: 0;
+  flex: 1;
+}
+
+.address-contact-card__info strong {
+  display: block;
+  font-size: 0.92rem;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.address-contact-card__addr-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--text-secondary);
+}
+
+.address-contact-card__copy {
+  padding: 1px 6px;
+  font-size: 0.66rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.address-contact-card__usage {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.address-contact-card__full-addr {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  word-break: break-all;
+}
+
+.address-contact-card__note {
+  margin: 0;
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.address-contact-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.address-contact-card__actions > * {
+  flex: 1;
+}
+</style>

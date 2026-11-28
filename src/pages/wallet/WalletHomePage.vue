@@ -69,17 +69,32 @@ const homeSyncLabel = computed(() => {
   return "等待同步";
 });
 let activitySyncTimer: number | null = null;
+let copyAddressTimer: number | null = null;
 const isRefreshingHome = ref(false);
 const isAddressCopied = ref(false);
 let portfolioRefreshRequestId = 0;
+
+function formatAssetBalanceDisplay(rawBalance: string | null | undefined) {
+  if (!rawBalance) {
+    return "0";
+  }
+  if (rawBalance === "Unavailable") {
+    return "暂不可用";
+  }
+  return formatTokenAmount(rawBalance);
+}
 
 async function copyHomeAddress() {
   if (!primaryAddress.value) return;
   try {
     await navigator.clipboard.writeText(primaryAddress.value);
     isAddressCopied.value = true;
-    setTimeout(() => {
+    if (copyAddressTimer) {
+      window.clearTimeout(copyAddressTimer);
+    }
+    copyAddressTimer = window.setTimeout(() => {
       isAddressCopied.value = false;
+      copyAddressTimer = null;
     }, 2000);
   } catch {}
 }
@@ -234,7 +249,13 @@ onMounted(() => {
   startActivitySyncLoop();
 });
 
-onBeforeUnmount(stopActivitySyncLoop);
+onBeforeUnmount(() => {
+  stopActivitySyncLoop();
+  if (copyAddressTimer) {
+    window.clearTimeout(copyAddressTimer);
+    copyAddressTimer = null;
+  }
+});
 
 watch([activeNetwork, primaryAddress, tokensForActiveNetwork], refreshPortfolio, {
   deep: true,
@@ -282,7 +303,7 @@ watch([pendingActivities, allNetworks], () => {
       </div>
 
       <div style="text-align: center; margin: 10px 0 6px;">
-        <p class="home-balance-card__amount" style="margin: 0; font-size: 2.2rem; font-weight: 800; letter-spacing: -0.02em;">
+        <p class="home-balance-card__amount" style="margin: 0; font-weight: 800; letter-spacing: -0.02em;">
           {{ formatTokenAmount(nativeAsset.balance) }} {{ nativeAsset.symbol }}
         </p>
         <button
@@ -392,7 +413,7 @@ watch([pendingActivities, allNetworks], () => {
             </div>
             <div class="token-row__meta">
               <strong class="token-row__balance">
-                {{ formatTokenAmount(snapshot.tokenBalances[token.id] ?? token.balance) }}
+                {{ formatAssetBalanceDisplay(snapshot.tokenBalances[token.id] ?? token.balance) }}
               </strong>
               <span class="token-row__subvalue">
                 {{ token.source === "custom" ? "自选" : token.symbol }}

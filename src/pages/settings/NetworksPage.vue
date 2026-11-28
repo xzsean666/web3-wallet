@@ -64,8 +64,14 @@ const draft = ref<NetworkDraft>({
   explorerUrl: "",
   environment: "mainnet",
 });
+const customFormRef = ref<HTMLElement | null>(null);
 let validationRequestId = 0;
 let rpcValidationRequestId = 0;
+let modalCloseTimer: number | null = null;
+
+function normalizeRpcCompareKey(url: string | null | undefined) {
+  return (url ?? "").trim().replace(/\/+$/, "").toLowerCase();
+}
 
 const draftKey = computed(() =>
   JSON.stringify({
@@ -249,6 +255,7 @@ function startEdit(network: NetworkConfig) {
     explorerUrl: network.explorerUrl ?? "",
     environment: network.environment,
   };
+  customFormRef.value?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 async function loadChainlistForEditingNetwork(network: NetworkConfig, forceRefresh = false) {
@@ -258,20 +265,28 @@ async function loadChainlistForEditingNetwork(network: NetworkConfig, forceRefre
   // Pre-seed with fallback/preset RPCs so the candidates are immediately available to the user
   const defaultRpc = defaultRpcUrl(network);
   const fallbacks = PRESET_RPC_FALLBACKS[network.chainId] ?? [];
-  const seedUrls = new Set<string>();
+  const seedKeys = new Set<string>();
   const seedList: ChainlistRpcItem[] = [];
 
-  if (defaultRpc) {
-    seedUrls.add(defaultRpc);
-    seedList.push({ url: defaultRpc, tracking: "none" });
+  const pushUniqueSeed = (url: string, tracking: RpcTrackingPolicy) => {
+    const compareKey = normalizeRpcCompareKey(url);
+    if (!compareKey || seedKeys.has(compareKey)) {
+      return;
+    }
+    seedKeys.add(compareKey);
+    seedList.push({ url, tracking });
+  };
+
+  if (network.rpcUrl) {
+    pushUniqueSeed(network.rpcUrl, "unknown");
   }
-  if (network.rpcUrl && !seedUrls.has(network.rpcUrl)) {
-    seedUrls.add(network.rpcUrl);
-    seedList.push({ url: network.rpcUrl, tracking: "unknown" });
+  if (defaultRpc) {
+    pushUniqueSeed(defaultRpc, "none");
   }
   for (const item of fallbacks) {
-    if (!seedUrls.has(item.url)) {
-      seedUrls.add(item.url);
+    const compareKey = normalizeRpcCompareKey(item.url);
+    if (compareKey && !seedKeys.has(compareKey)) {
+      seedKeys.add(compareKey);
       seedList.push(item);
     }
   }
@@ -279,18 +294,18 @@ async function loadChainlistForEditingNetwork(network: NetworkConfig, forceRefre
 
   isLoadingChainlist.value = true;
   try {
-    const list = await getChainlistRpcsForChain(network.chainId, { forceRefresh, timeoutMs: 3000 });
+    const list = await getChainlistRpcsForChain(network.chainId, { forceRefresh, timeoutMs: 8000 });
 
-    const existingUrls = new Set(list.map((item) => item.url));
+    const existingKeys = new Set(list.map((item) => normalizeRpcCompareKey(item.url)));
     const extraRpcs: ChainlistRpcItem[] = [];
 
-    if (defaultRpc && !existingUrls.has(defaultRpc)) {
-      existingUrls.add(defaultRpc);
-      extraRpcs.push({ url: defaultRpc, tracking: "none" });
-    }
-    if (network.rpcUrl && !existingUrls.has(network.rpcUrl)) {
-      existingUrls.add(network.rpcUrl);
+    if (network.rpcUrl && !existingKeys.has(normalizeRpcCompareKey(network.rpcUrl))) {
+      existingKeys.add(normalizeRpcCompareKey(network.rpcUrl));
       extraRpcs.push({ url: network.rpcUrl, tracking: "unknown" });
+    }
+    if (defaultRpc && !existingKeys.has(normalizeRpcCompareKey(defaultRpc))) {
+      existingKeys.add(normalizeRpcCompareKey(defaultRpc));
+      extraRpcs.push({ url: defaultRpc, tracking: "none" });
     }
 
     chainlistRpcs.value = [...extraRpcs, ...list];
@@ -299,7 +314,15 @@ async function loadChainlistForEditingNetwork(network: NetworkConfig, forceRefre
   }
 }
 
+function clearModalCloseTimer() {
+  if (modalCloseTimer) {
+    window.clearTimeout(modalCloseTimer);
+    modalCloseTimer = null;
+  }
+}
+
 function resetRpcOverrideForm() {
+  clearModalCloseTimer();
   rpcEditingNetworkId.value = null;
   rpcDraft.value = "";
   rpcErrors.value = [];
@@ -313,6 +336,7 @@ function resetRpcOverrideForm() {
 }
 
 function openRpcModal(network: NetworkConfig) {
+  clearModalCloseTimer();
   rpcEditingNetworkId.value = network.id;
   rpcDraft.value = network.rpcUrl;
   rpcErrors.value = [];
@@ -340,19 +364,23 @@ function handleGlobalKeydown(e: KeyboardEvent) {
 async function submitRpcOverrideModal() {
   await submitRpcOverride();
   if (rpcErrors.value.length === 0) {
-    rpcModalSaveMessage.value = `✓ 已成功更新 ${rpcEditingNetwork.value?.name ?? "网络"} 的 RPC 节点！`;
-    setTimeout(() => {
+    rpcModalSaveMessage.value = `✓ 已成功保存 ${rpcEditingNetwork.value?.name ?? "网络"} 的 RPC 节点！`;
+    clearModalCloseTimer();
+    modalCloseTimer = window.setTimeout(() => {
+      modalCloseTimer = null;
       closeRpcModal();
-    }, 700);
+    }, 650);
   }
 }
 
 function restoreDefaultRpcInModal(network: NetworkConfig) {
   restoreDefaultRpc(network);
   rpcModalSaveMessage.value = `✓ 已恢复为官方预置默认 RPC 节点`;
-  setTimeout(() => {
+  clearModalCloseTimer();
+  modalCloseTimer = window.setTimeout(() => {
+    modalCloseTimer = null;
     closeRpcModal();
-  }, 700);
+  }, 650);
 }
 
 onMounted(() => {
@@ -360,24 +388,29 @@ onMounted(() => {
   if (activeNetwork.value?.environment === "testnet") {
     activeNetworkTab.value = "testnet";
   }
-  if (!rpcEditingNetworkId.value && activeNetwork.value) {
-    rpcEditingNetworkId.value = activeNetwork.value.id;
-    rpcDraft.value = activeNetwork.value.rpcUrl;
-    void loadChainlistForEditingNetwork(activeNetwork.value);
-  }
 });
 
 onUnmounted(() => {
   window.removeEventListener("keydown", handleGlobalKeydown);
+  clearModalCloseTimer();
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
 });
 
 const popularChainlistPresets = [
-  { name: "Arbitrum One", chainId: "42161", symbol: "ETH", rpcUrl: "https://arb1.arbitrum.io/rpc" },
-  { name: "Optimism", chainId: "10", symbol: "ETH", rpcUrl: "https://mainnet.optimism.io" },
-  { name: "Polygon", chainId: "137", symbol: "POL", rpcUrl: "https://polygon-rpc.com" },
-  { name: "Base", chainId: "8453", symbol: "ETH", rpcUrl: "https://mainnet.base.org" },
-  { name: "BNB Chain", chainId: "56", symbol: "BNB", rpcUrl: "https://bsc-dataseed.bnbchain.org" },
+  { name: "Avalanche C-Chain", chainId: "43114", symbol: "AVAX", rpcUrl: "https://api.avax.network/ext/bc/C/rpc", explorerUrl: "https://snowtrace.io" },
+  { name: "Linea", chainId: "59144", symbol: "ETH", rpcUrl: "https://rpc.linea.build", explorerUrl: "https://lineascan.build" },
+  { name: "Scroll", chainId: "534352", symbol: "ETH", rpcUrl: "https://rpc.scroll.io", explorerUrl: "https://scrollscan.com" },
+  { name: "zkSync Era", chainId: "324", symbol: "ETH", rpcUrl: "https://mainnet.era.zksync.io", explorerUrl: "https://explorer.zksync.io" },
+  { name: "Gnosis", chainId: "100", symbol: "xDAI", rpcUrl: "https://rpc.gnosischain.com", explorerUrl: "https://gnosisscan.io" },
 ];
+const availablePopularPresets = computed(() =>
+  popularChainlistPresets.filter(
+    (preset) => !allNetworks.value.some((network) => network.chainId === Number(preset.chainId)),
+  ),
+);
 
 function selectPresetChainlist(preset: (typeof popularChainlistPresets)[number]) {
   draft.value = {
@@ -385,7 +418,7 @@ function selectPresetChainlist(preset: (typeof popularChainlistPresets)[number])
     chainId: preset.chainId,
     symbol: preset.symbol,
     rpcUrl: preset.rpcUrl,
-    explorerUrl: "",
+    explorerUrl: preset.explorerUrl,
     environment: "mainnet",
   };
   formErrors.value = [];
@@ -402,20 +435,20 @@ function selectCandidateRpc(url: string) {
 }
 
 function isSelectedCandidate(url: string) {
-  return rpcDraft.value.trim() === url.trim() || rpcDraft.value.trim() === url.replace(/\/$/, "");
+  return Boolean(rpcDraft.value.trim()) && normalizeRpcCompareKey(rpcDraft.value) === normalizeRpcCompareKey(url);
 }
 
 function isActiveNetworkRpc(url: string) {
   const current = rpcEditingNetwork.value?.rpcUrl;
   if (!current) return false;
-  return current.trim() === url.trim() || current.trim() === url.replace(/\/$/, "");
+  return normalizeRpcCompareKey(current) === normalizeRpcCompareKey(url);
 }
 
 function isDefaultPresetRpc(url: string) {
   if (!rpcEditingNetwork.value) return false;
   const def = defaultRpcUrl(rpcEditingNetwork.value);
   if (!def) return false;
-  return def.trim() === url.trim() || def.trim() === url.replace(/\/$/, "");
+  return normalizeRpcCompareKey(def) === normalizeRpcCompareKey(url);
 }
 
 async function testSingleRpc(url: string) {
@@ -791,16 +824,16 @@ function removeNetwork(id: string) {
           </button>
         </div>
 
-        <div class="modal-body">
-          <form class="form-grid" @submit.prevent="submitRpcOverrideModal">
+        <form class="rpc-modal-form" @submit.prevent="submitRpcOverrideModal">
+          <div class="modal-body">
             <!-- Chainlist Candidates Section -->
             <div class="rpc-candidate-section">
               <div class="rpc-toolbar">
                 <div class="rpc-toolbar__title">
                   <strong>Chainlist 节点候选 ({{ chainlistRpcs.length }})</strong>
-                  <span class="helper-text">点击候选节点直接选用并自动校验</span>
+                  <span class="helper-text">点击节点填入并校验，确认后点击底部保存按钮生效</span>
                 </div>
-                <div class="inline-actions">
+                <div class="inline-actions rpc-toolbar-actions">
                   <button
                     class="button button--secondary button--small"
                     type="button"
@@ -808,7 +841,7 @@ function removeNetwork(id: string) {
                     @click="testAllCandidateRpcs"
                   >
                     <span v-if="isTestingBatchLatency" class="spinner-small" />
-                    {{ isTestingBatchLatency ? "正在批量测速..." : "⚡ 一键测速全部" }}
+                    {{ isTestingBatchLatency ? "测速中..." : "⚡ 一键测速" }}
                   </button>
                   <button
                     class="button button--ghost button--small"
@@ -816,7 +849,7 @@ function removeNetwork(id: string) {
                     :disabled="isLoadingChainlist"
                     @click="loadChainlistForEditingNetwork(rpcEditingNetwork, true)"
                   >
-                    {{ isLoadingChainlist ? "刷新中..." : "🔄 刷新 Chainlist" }}
+                    {{ isLoadingChainlist ? "同步中..." : "🔄 刷新列表" }}
                   </button>
                 </div>
               </div>
@@ -829,25 +862,26 @@ function removeNetwork(id: string) {
                 />
               </div>
 
-              <div v-if="isLoadingChainlist" class="rpc-loading-card">
-                <div class="spinner-small" style="width: 20px; height: 20px; border-width: 3px;" />
-                <p>正在从 Chainlist 获取 {{ rpcEditingNetwork.name }} 的可用节点列表...</p>
+              <div v-if="isLoadingChainlist" class="rpc-loading-inline">
+                <span class="spinner-small" />
+                <span>正在后台同步 Chainlist 最新节点列表...</span>
               </div>
 
-              <div v-else-if="sortedAndFilteredCandidates.length > 0" class="rpc-candidate-list rpc-candidate-list--modal">
+              <div v-if="sortedAndFilteredCandidates.length > 0" class="rpc-candidate-list rpc-candidate-list--modal">
                 <div
                   v-for="candidate in sortedAndFilteredCandidates"
                   :key="candidate.url"
                   :class="['rpc-candidate-item', { 'rpc-candidate-item--active': isSelectedCandidate(candidate.url) }]"
                   @click="selectCandidateRpc(candidate.url)"
                 >
-                  <div class="rpc-candidate-main">
-                    <div class="rpc-candidate-url-row">
-                      <span class="rpc-radio-indicator">
-                        <span v-if="isSelectedCandidate(candidate.url)" class="rpc-radio-dot" />
-                      </span>
-                      <p class="rpc-candidate-url">{{ candidate.url }}</p>
-                    </div>
+                  <div class="rpc-candidate-url-row">
+                    <span class="rpc-radio-indicator">
+                      <span v-if="isSelectedCandidate(candidate.url)" class="rpc-radio-dot" />
+                    </span>
+                    <p class="rpc-candidate-url">{{ candidate.url }}</p>
+                  </div>
+
+                  <div class="rpc-candidate-bottom">
                     <div class="rpc-candidate-badges">
                       <span :class="['status-chip', trackingChipClass(candidate.tracking)]">
                         {{ trackingLabel(candidate.tracking) }}
@@ -858,35 +892,39 @@ function removeNetwork(id: string) {
                       <span v-if="isDefaultPresetRpc(candidate.url)" class="status-chip">
                         预置默认
                       </span>
-                      <span v-if="isSelectedCandidate(candidate.url)" class="status-chip status-chip--accent">
-                        已选定
+                      <span
+                        v-if="isSelectedCandidate(candidate.url) && !isActiveNetworkRpc(candidate.url)"
+                        class="status-chip status-chip--warning"
+                      >
+                        待保存
                       </span>
                     </div>
-                  </div>
-                  <div class="rpc-candidate-actions">
-                    <span :class="['status-chip', latencyChipClass(rpcLatencyResults[candidate.url])]">
-                      {{ latencyLabel(rpcLatencyResults[candidate.url], candidate.url) }}
-                    </span>
-                    <button
-                      class="button button--ghost button--small"
-                      type="button"
-                      :disabled="testingSingleRpc[candidate.url]"
-                      @click.stop="testSingleRpc(candidate.url)"
-                    >
-                      {{ testingSingleRpc[candidate.url] ? "测速中" : "测速" }}
-                    </button>
-                    <button
-                      class="button button--secondary button--small"
-                      type="button"
-                      @click.stop="selectCandidateRpc(candidate.url)"
-                    >
-                      选择
-                    </button>
+
+                    <div class="rpc-candidate-actions">
+                      <span :class="['status-chip', latencyChipClass(rpcLatencyResults[candidate.url])]">
+                        {{ latencyLabel(rpcLatencyResults[candidate.url], candidate.url) }}
+                      </span>
+                      <button
+                        class="button button--ghost button--small"
+                        type="button"
+                        :disabled="testingSingleRpc[candidate.url]"
+                        @click.stop="testSingleRpc(candidate.url)"
+                      >
+                        {{ testingSingleRpc[candidate.url] ? "测速中" : "测速" }}
+                      </button>
+                      <button
+                        class="button button--secondary button--small"
+                        type="button"
+                        @click.stop="selectCandidateRpc(candidate.url)"
+                      >
+                        {{ isSelectedCandidate(candidate.url) ? "已选" : "选择" }}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              <p v-else class="empty-state">
+              <p v-else-if="!isLoadingChainlist" class="empty-state">
                 未找到匹配的 RPC 节点。可在下方手动填入。
               </p>
             </div>
@@ -922,33 +960,33 @@ function removeNetwork(id: string) {
                 {{ rpcModalSaveMessage }}
               </div>
             </div>
+          </div>
 
-            <div class="modal-footer">
-              <button
-                class="button button--secondary"
-                type="button"
-                :disabled="isValidatingRpcOverride"
-                @click="runRpcOverrideValidation"
-              >
-                {{ isValidatingRpcOverride ? "正在校验 RPC..." : "校验当前 RPC" }}
-              </button>
-              <button
-                v-if="isRpcOverridden(rpcEditingNetwork)"
-                class="button button--ghost"
-                type="button"
-                @click="restoreDefaultRpcInModal(rpcEditingNetwork)"
-              >
-                恢复默认 RPC
-              </button>
-              <button class="button button--ghost" type="button" @click="closeRpcModal">
-                取消
-              </button>
-              <button class="button button--primary" type="submit" :disabled="isValidatingRpcOverride">
-                {{ isValidatingRpcOverride ? "正在保存..." : "校验并保存 RPC" }}
-              </button>
-            </div>
-          </form>
-        </div>
+          <div class="modal-footer">
+            <button
+              class="button button--secondary button--small"
+              type="button"
+              :disabled="isValidatingRpcOverride"
+              @click="runRpcOverrideValidation"
+            >
+              {{ isValidatingRpcOverride ? "校验中..." : "校验 RPC" }}
+            </button>
+            <button
+              v-if="isRpcOverridden(rpcEditingNetwork)"
+              class="button button--ghost button--small"
+              type="button"
+              @click="restoreDefaultRpcInModal(rpcEditingNetwork)"
+            >
+              恢复默认
+            </button>
+            <button class="button button--ghost button--small" type="button" @click="closeRpcModal">
+              取消
+            </button>
+            <button class="button button--primary button--small" type="submit" :disabled="isValidatingRpcOverride">
+              {{ isValidatingRpcOverride ? "正在保存..." : "校验并保存 RPC" }}
+            </button>
+          </div>
+        </form>
       </div>
     </div>
 
@@ -1138,8 +1176,9 @@ function removeNetwork(id: string) {
       </div>
     </SectionCard>
 
+    <div ref="customFormRef">
     <SectionCard
-      :title="editingId ? 'Edit Custom Network' : 'Add Custom Network'"
+      :title="editingId ? '编辑自定义网络' : '添加自定义网络'"
       description="支持从 Chainlist 搜索网络一键导入，或手动配置 EVM 参数"
     >
       <div v-if="!editingId" class="chainlist-search">
@@ -1153,10 +1192,13 @@ function removeNetwork(id: string) {
         </label>
 
         <!-- Quick Chainlist Presets -->
-        <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;">
+        <div
+          v-if="availablePopularPresets.length > 0"
+          style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 8px;"
+        >
           <span style="font-size: 0.72rem; color: var(--text-muted);">热门:</span>
           <button
-            v-for="preset in popularChainlistPresets"
+            v-for="preset in availablePopularPresets"
             :key="preset.chainId"
             class="status-chip"
             type="button"
@@ -1262,6 +1304,7 @@ function removeNetwork(id: string) {
         </div>
       </form>
     </SectionCard>
+    </div>
 
     <!-- Collapsible Rules & RPC Details -->
     <details class="collapsible-card">
@@ -1286,23 +1329,23 @@ function removeNetwork(id: string) {
             <strong>{{ validationStatusLabel }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Expected Chain ID</span>
+            <span>预期 Chain ID</span>
             <strong>{{ validation.expectedChainId }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Returned Chain ID</span>
-            <strong>{{ validation.actualChainId ?? "N/A" }}</strong>
+            <span>返回 Chain ID</span>
+            <strong>{{ validation.actualChainId ?? "无" }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Latest Block</span>
-            <strong>{{ validation.latestBlock ?? "N/A" }}</strong>
+            <span>最新区块</span>
+            <strong>{{ validation.latestBlock ?? "无" }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Latency</span>
-            <strong>{{ validation.latencyMs ? `${validation.latencyMs} ms` : "N/A" }}</strong>
+            <span>响应延迟</span>
+            <strong>{{ validation.latencyMs ? `${validation.latencyMs} ms` : "无" }}</strong>
           </div>
           <div class="key-value-row">
-            <span>Checked At</span>
+            <span>校验时间</span>
             <strong>{{ formatDateTime(validation.checkedAt) }}</strong>
           </div>
           <p class="helper-text">{{ validation.message }}</p>

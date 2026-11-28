@@ -216,18 +216,18 @@ const selectedAssetBalance = computed(() => {
 });
 const selectedAssetBalanceLabel = computed(() => {
   if (!selectedAssetBalance.value || selectedAssetBalance.value === "Unavailable") {
-    return "Unavailable";
+    return "暂不可用";
   }
 
   return formatTokenAmount(selectedAssetBalance.value);
 });
 const selectedAssetBalanceSummary = computed(() => {
   if (!selectedAsset.value) {
-    return "N/A";
+    return "无";
   }
 
   if (!selectedAssetBalance.value || selectedAssetBalance.value === "Unavailable") {
-    return "Unavailable";
+    return "暂不可用";
   }
 
   return `${selectedAssetBalanceLabel.value} ${selectedAsset.value.symbol}`;
@@ -306,12 +306,25 @@ watch(
   { immediate: true },
 );
 
+let previousHydratedAccountId = activeAccountId.value;
+
 watch(
   [activeAccountId, () => activeNetwork.value.id],
-  () => {
+  ([nextAccountId]) => {
+    const accountChanged = nextAccountId !== previousHydratedAccountId;
+    previousHydratedAccountId = nextAccountId;
     const draft = persistedSendDraft.value;
 
     if (!draft || draft.networkId !== activeNetwork.value.id) {
+      if (accountChanged) {
+        if (!route.query.asset) {
+          selectedAssetId.value = "native";
+        }
+        if (!route.query.recipient) {
+          recipientAddress.value = "";
+        }
+        amount.value = "";
+      }
       return;
     }
 
@@ -664,7 +677,11 @@ function applyErc20TokenToForm(
   selectedAssetId.value = token.id;
   recipientAddress.value = request.recipientAddress;
   amount.value = formatRawEvmAmount(request.rawAmount, token.decimals);
-  paymentRequestText.value = request.raw;
+  if (showManualQrInput.value) {
+    paymentRequestText.value = request.raw;
+  } else {
+    paymentRequestText.value = "";
+  }
   setPaymentRequestFeedback({
     tone: "success",
     message: imported
@@ -720,7 +737,7 @@ async function applyPaymentRequestPayload(payload: string, sourceLabel: string) 
         amount.value = formatRawEvmAmount(paymentRequest.rawAmount, 18);
       }
 
-      paymentRequestText.value = paymentRequest.raw;
+      paymentRequestText.value = showManualQrInput.value ? paymentRequest.raw : "";
       setPaymentRequestFeedback({
         tone: "success",
         message: `已从${sourceLabel}回填 ${activeNetwork.value.symbol} 转账`,
@@ -1117,9 +1134,7 @@ async function buildConfirmation() {
   if (parsedAmountResult?.ok && selectedAssetParsedBalance.value !== null) {
     if (parsedAmountResult.parsed > selectedAssetParsedBalance.value) {
       formErrors.value.push("发送数量不能超过当前可用余额");
-    }
-
-    if (selectedAsset.value?.type === "native" && parsedAmountResult.parsed >= selectedAssetParsedBalance.value) {
+    } else if (selectedAsset.value?.type === "native" && parsedAmountResult.parsed === selectedAssetParsedBalance.value) {
       formErrors.value.push("发送原生币时必须预留网络费，不能直接发送全部余额");
     }
   }
@@ -1243,6 +1258,18 @@ async function buildConfirmation() {
       isEstimating.value = false;
     }
   }
+}
+
+function switchSignAuthMode(mode: "pattern" | "password") {
+  if (signAuthMode.value === mode) {
+    return;
+  }
+  signAuthMode.value = mode;
+  walletPassword.value = "";
+  patternError.value = "";
+  transferFeedback.value = null;
+  patternStatus.value = "normal";
+  patternLockRef.value?.reset();
 }
 
 async function onSignPatternCompleted(pattern: number[]) {
@@ -1382,6 +1409,13 @@ async function signAndBroadcast() {
         rawTransaction: signedPayload.rawTransaction,
       });
     } catch (error) {
+      if (hasPattern.value && signAuthMode.value === "pattern") {
+        patternStatus.value = "error";
+        setTimeout(() => {
+          patternStatus.value = "normal";
+          patternLockRef.value?.reset();
+        }, 1200);
+      }
       transferFeedback.value = describeTransferError({
         error,
         stage: "broadcast",
@@ -1798,7 +1832,7 @@ async function signAndBroadcast() {
               :class="['button', signAuthMode === 'pattern' ? 'button--secondary' : 'button--ghost']"
               type="button"
               style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
-              @click="signAuthMode = 'pattern'"
+              @click="switchSignAuthMode('pattern')"
             >
               手势签名
             </button>
@@ -1806,7 +1840,7 @@ async function signAndBroadcast() {
               :class="['button', signAuthMode === 'password' ? 'button--secondary' : 'button--ghost']"
               type="button"
               style="flex: 1; padding: 6px 12px; font-size: 0.8rem;"
-              @click="signAuthMode = 'password'"
+              @click="switchSignAuthMode('password')"
             >
               密码签名
             </button>
@@ -1880,18 +1914,13 @@ async function signAndBroadcast() {
         </section>
         <div class="form-actions">
           <button
+            v-if="!hasPattern || signAuthMode === 'password'"
             class="button button--primary"
             type="button"
             :disabled="isBroadcasting || (confirmation ? !isConfirmationCurrent(confirmation) : true)"
             @click="signAndBroadcast"
           >
-            {{
-              isBroadcasting
-                ? "正在签名并广播..."
-                : (hasPattern && signAuthMode === "pattern"
-                    ? (walletPassword ? "签名并广播" : "滑动上方手势签名")
-                    : "签名并广播")
-            }}
+            {{ isBroadcasting ? "正在签名并广播..." : "签名并广播" }}
           </button>
           <button
             class="button button--ghost"

@@ -343,6 +343,7 @@ pub struct SignedTransferPayload {
 pub struct UiNetworkConfig {
     id: String,
     source: String,
+    environment: Option<String>,
     name: String,
     chain_id: i64,
     rpc_url: String,
@@ -397,8 +398,18 @@ pub struct UiActivityItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+pub struct UiSendDraft {
+    network_id: String,
+    asset_id: String,
+    recipient_address: String,
+    amount: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
 pub struct PersistedUiState {
     custom_networks: Option<Vec<UiNetworkConfig>>,
+    network_rpc_overrides: Option<HashMap<String, String>>,
     active_network_id: Option<String>,
 }
 
@@ -408,6 +419,7 @@ pub struct WalletScopedUiState {
     custom_tokens: Option<Vec<UiTrackedToken>>,
     recent_activity: Option<Vec<UiActivityItem>>,
     address_book: Option<Vec<UiAddressBookEntry>>,
+    send_draft: Option<UiSendDraft>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -3288,5 +3300,60 @@ mod tests {
         ));
 
         let _ = fs::remove_dir_all(temp_dir);
+    }
+
+    #[test]
+    fn persisted_ui_state_preserves_rpc_overrides_environment_and_send_draft() {
+        let raw = r#"{
+            "global": {
+                "customNetworks": [{
+                    "id": "custom-1",
+                    "source": "custom",
+                    "environment": "testnet",
+                    "name": "Custom Testnet",
+                    "chainId": 11155111,
+                    "rpcUrl": "https://rpc.example.com/",
+                    "symbol": "ETH",
+                    "explorerUrl": "https://explorer.example.com"
+                }],
+                "networkRpcOverrides": {
+                    "ethereum": "https://eth.llamarpc.com/"
+                },
+                "activeNetworkId": "ethereum"
+            },
+            "walletScopes": {
+                "acc-1": {
+                    "sendDraft": {
+                        "networkId": "ethereum",
+                        "assetId": "native",
+                        "recipientAddress": "0x1111111111111111111111111111111111111111",
+                        "amount": "0.25"
+                    }
+                }
+            }
+        }"#;
+
+        let parsed: PersistedUiStateEnvelope =
+            serde_json::from_str(raw).expect("envelope should deserialize");
+        let serialized = serde_json::to_string(&parsed).expect("envelope should serialize");
+        let value: serde_json::Value =
+            serde_json::from_str(&serialized).expect("value should deserialize");
+
+        assert_eq!(
+            value["global"]["networkRpcOverrides"]["ethereum"],
+            "https://eth.llamarpc.com/"
+        );
+        assert_eq!(
+            value["global"]["customNetworks"][0]["environment"],
+            "testnet"
+        );
+        assert_eq!(
+            value["walletScopes"]["acc-1"]["sendDraft"]["recipientAddress"],
+            "0x1111111111111111111111111111111111111111"
+        );
+        assert_eq!(
+            value["walletScopes"]["acc-1"]["sendDraft"]["amount"],
+            "0.25"
+        );
     }
 }

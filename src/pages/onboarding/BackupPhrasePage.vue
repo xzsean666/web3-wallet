@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { RouterLink, useRouter } from "vue-router";
+import { useRouter } from "vue-router";
 import {
   cancelPendingWallet,
   finalizePendingWallet,
@@ -313,13 +313,10 @@ async function cancelFlow() {
         {{ PREVIEW_SECRET_FLOW_BLOCKED_MESSAGE }}
       </p>
 
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; font-size: 0.78rem;">
+      <div style="display: flex; justify-content: center; align-items: center; margin-top: 8px; font-size: 0.78rem;">
         <button class="button button--ghost button--small" type="button" @click="cancelFlow">
           取消创建流程
         </button>
-        <RouterLink class="button button--ghost button--small" :to="backTarget">
-          {{ sessionStore.hasWallet ? "返回账号管理" : "返回上一步" }}
-        </RouterLink>
       </div>
     </section>
   </main>
